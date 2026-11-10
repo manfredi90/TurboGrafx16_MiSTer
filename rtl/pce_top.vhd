@@ -815,7 +815,8 @@ PSG_SR <= signed(PCE_SR(23 downto 8));
 PSG_SL <= signed(PCE_SL(23 downto 8));
 
 -- savestates
-FREEZE <= FREEZE_R or (SS_FREEZE_REQ and CPU_SS_IDLE and VCE_SS_IDLE and VDC0_SS_IDLE);
+-- freeze between CPU cycles and dot clocks, with no ROM read in progress
+FREEZE <= FREEZE_R or (SS_FREEZE_REQ and CPU_SS_IDLE and VCE_SS_IDLE and VDC0_SS_IDLE and ROM_RDY and not CPU_CLKEN);
 
 process( CLK ) begin
 	if rising_edge( CLK ) then

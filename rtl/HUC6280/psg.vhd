@@ -102,8 +102,9 @@ signal MIX_CNT	: std_logic_vector(2 downto 0);
 signal LDATA_FF	: std_logic_vector(23 downto 0);
 signal RDATA_FF	: std_logic_vector(23 downto 0);
 
--- savestates: 8 = globals, 9 + 2*ch = channel registers, 10 + 2*ch = channel counters
-type ss_regs_t is array(0 to 12) of std_logic_vector(63 downto 0);
+-- savestates: 8 = globals, 9 + 2*ch = channel registers, 10 + 2*ch = channel counters, 21..23 = mixer
+type ss_regs_t is array(0 to 15) of std_logic_vector(63 downto 0);
+signal SS_MIX      : std_logic_vector(2 downto 0);
 signal SS_IN, SS_OUT, SS_DO : ss_regs_t;
 signal SS_WAVE_CH  : integer range 0 to 5;
 signal SS_WAVE_OK  : std_logic;
@@ -426,6 +427,23 @@ begin
 			when others => null;
 			end case;
 		end if;
+		if SS_RESTORE = '1' then
+			case SS_IN(13)(2 downto 0) is
+				when "001"  => MIX <= MIX_NEXT;
+				when "010"  => MIX <= MIX_LREAD;
+				when "011"  => MIX <= MIX_LNEXT;
+				when "100"  => MIX <= MIX_RREAD;
+				when "101"  => MIX <= MIX_RNEXT;
+				when "110"  => MIX <= MIX_END;
+				when others => MIX <= MIX_WAIT;
+			end case;
+			MIX_CNT  <= SS_IN(13)(5 downto 3);
+			VT_ADDR  <= SS_IN(13)(17 downto 6);
+			LACC     <= SS_IN(13)(41 downto 18);
+			RACC     <= SS_IN(14)(23 downto 0);
+			LDATA_FF <= SS_IN(14)(47 downto 24);
+			RDATA_FF <= SS_IN(15)(23 downto 0);
+		end if;
 	end if;
 end process;
 
@@ -441,7 +459,13 @@ gSS_CH: for i in 0 to 5 generate
 	SS_OUT(2+i*2) <= "000000" & CH(i).GL_OUT & CH(i).NG_OUT & CH(i).WF_OUT & CH(i).LFO_CNT & CH(i).DA_OUT & CH(i).NG_CNT & CH(i).LFSR;
 end generate;
 
-gSS: for i in 0 to 12 generate
+SS_MIX <= "001" when MIX = MIX_NEXT  else "010" when MIX = MIX_LREAD else "011" when MIX = MIX_LNEXT else
+          "100" when MIX = MIX_RREAD else "101" when MIX = MIX_RNEXT else "110" when MIX = MIX_END   else "000";
+SS_OUT(13) <= (63 downto 42 => '0') & LACC & VT_ADDR & MIX_CNT & SS_MIX;
+SS_OUT(14) <= (63 downto 48 => '0') & LDATA_FF & RACC;
+SS_OUT(15) <= (63 downto 24 => '0') & RDATA_FF;
+
+gSS: for i in 0 to 15 generate
 	iREG : entity work.eReg_SavestateV generic map (8 + i, (others => '0'))
 	port map (CLK, SS_BUS_Din, SS_BUS_Adr, SS_BUS_wren, SS_BUS_rst, SS_DO(i), SS_OUT(i), SS_IN(i));
 end generate;
@@ -450,14 +474,14 @@ process(SS_DO)
 	variable v : std_logic_vector(63 downto 0);
 begin
 	v := (others => '0');
-	for i in 0 to 12 loop
+	for i in 0 to 15 loop
 		v := v or SS_DO(i);
 	end loop;
 	SS_BUS_Dout <= v;
 end process;
 
 SS_WAVE_OK  <= '1' when unsigned(SS_WAVE_A(7 downto 5)) < 6 else '0';
-SS_WAVE_CH  <= to_integer(unsigned(SS_WAVE_A(7 downto 5))) when SS_WAVE_OK = '1' else 0;
+SS_WAVE_CH  <= to_integer(unsigned(SS_WAVE_A(7 downto 5))) when unsigned(SS_WAVE_A(7 downto 5)) < 6 else 0;
 SS_WAVE_IDX <= to_integer(unsigned(SS_WAVE_A(4 downto 0)));
 
 process( CLK ) begin

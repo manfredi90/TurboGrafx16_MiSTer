@@ -59,11 +59,11 @@ jobs:
         shell: bash
         run: |
           until [ -f build.rc ]; do sleep 30; done
-          grep -A8 "Slow 1100mV 85C Model Setup Summary" output_files/TurboGrafx16.sta.rpt 2>/dev/null |
+          grep -A12 "Setup Summary" output_files/TurboGrafx16.sta.rpt 2>/dev/null |
             grep -E "^; [^;]+; -?[0-9]" | sed 's/^/::notice::setup slack: /' || true
           grep -q "Timing requirements not met" output_files/TurboGrafx16.sta.rpt 2>/dev/null &&
             echo "::warning::Timing requirements not met" || true
-          status timing "$(grep -A8 "Slow 1100mV 85C Model Setup Summary" output_files/TurboGrafx16.sta.rpt 2>/dev/null | grep -E "^; [^;]+; -?[0-9]" | head -4 | tr -s ' ' | tr '\n' ' ')"
+          status timing "$(grep -A12 "Setup Summary" output_files/TurboGrafx16.sta.rpt 2>/dev/null | grep -E "^; [^;]+; -?[0-9]" | head -4 | tr -s ' ' | tr '\n' ' ')"
           exit $(cat build.rc)
 
       # errors and the end of the log on the run page

@@ -17,7 +17,13 @@ entity HUC6280_AG is
 		  DR   			: in std_logic_vector(7 downto 0);
 
 		  PC				: out std_logic_vector(15 downto 0);
-        AA     		: out std_logic_vector(15 downto 0)
+        AA     		: out std_logic_vector(15 downto 0);
+
+		  SS_RESTORE   : in std_logic := '0';
+		  SS_PC_IN     : in std_logic_vector(15 downto 0) := (others => '0');
+		  SS_AA_IN     : in std_logic_vector(15 downto 0) := (others => '0');
+		  SS_SC_IN     : in std_logic := '0';
+		  SS_SC_OUT    : out std_logic
     );
 end HUC6280_AG;
 
@@ -64,6 +70,9 @@ begin
 		elsif rising_edge(CLK) then
 			if CE = '1' then
 				PCr <= NextPC;
+			end if;
+			if SS_RESTORE = '1' then
+				PCr <= SS_PC_IN;
 			end if;
 		end if;
 	end process;
@@ -116,10 +125,16 @@ begin
 				SavedCarry <= NewAAL(8); 
 				AAH <= NewAAH(7 downto 0); 
 			end if;
+			if SS_RESTORE = '1' then
+				AAL <= SS_AA_IN(7 downto 0);
+				AAH <= SS_AA_IN(15 downto 8);
+				SavedCarry <= SS_SC_IN;
+			end if;
 		end if;
 	end process;
 
 	AA <= AAH & AAL; 
+	SS_SC_OUT <= SavedCarry;
 	PC <= PCr;
 	
 end rtl;

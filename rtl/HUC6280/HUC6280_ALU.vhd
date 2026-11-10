@@ -19,7 +19,11 @@ entity ALU is
 		VO		: out std_logic; 
 		NO		: out std_logic; 
 		ZO		: out std_logic; 
-		RES	: out std_logic_vector(7 downto 0)
+		RES	: out std_logic_vector(7 downto 0);
+
+		SS_RESTORE : in std_logic := '0';
+		SS_SC_IN   : in std_logic := '0';
+		SS_SC_OUT  : out std_logic
 	);
 end ALU;
 
@@ -101,8 +105,13 @@ begin
 			if EN = '1' then
 				SavedC <= AddCO;
 			end if;
+			if SS_RESTORE = '1' then
+				SavedC <= SS_SC_IN;
+			end if;
 		end if;
 	end process;
+
+	SS_SC_OUT <= SavedC;
 	
 	process(CTRL, CR, IntL, IntR, AddCO, AddS)
 	begin

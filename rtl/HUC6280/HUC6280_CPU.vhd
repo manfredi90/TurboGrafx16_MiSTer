@@ -23,7 +23,17 @@ entity HUC6280_CPU is
 		VDCNUM	: in std_logic;
 
 		MCYCLE  	: out std_logic;
-		CS  		: out std_logic
+		CS  		: out std_logic;
+
+		SS_RESTORE : in std_logic := '0';
+		SS_IN1     : in std_logic_vector(63 downto 0) := (others => '0');
+		SS_IN2     : in std_logic_vector(63 downto 0) := (others => '0');
+		SS_IN3     : in std_logic_vector(63 downto 0) := (others => '0');
+		SS_IN4     : in std_logic_vector(63 downto 0) := (others => '0');
+		SS_OUT1    : out std_logic_vector(63 downto 0);
+		SS_OUT2    : out std_logic_vector(63 downto 0);
+		SS_OUT3    : out std_logic_vector(63 downto 0);
+		SS_OUT4    : out std_logic_vector(63 downto 0)
 	);
 end HUC6280_CPU;
 
@@ -83,6 +93,11 @@ architecture rtl of HUC6280_CPU is
 	signal OLD_NMI_N 		: std_logic;
 	signal NMI_SYNC 		: std_logic;
 	signal NMI_ACTIVE 	: std_logic;
+
+	signal CS_R 			: std_logic;
+	signal AG_SC 			: std_logic;
+	signal ALU_SC 			: std_logic;
+	signal MC_MI 			: std_logic_vector(41 downto 0);
 
 begin
 	
@@ -165,6 +180,10 @@ begin
 				IR <= NEXT_IR;
 				STATE <= NEXT_STATE;
 			end if;
+			if SS_RESTORE = '1' then
+				IR <= SS_IN1(63 downto 56);
+				STATE <= unsigned(SS_IN2(60 downto 56));
+			end if;
 		end if;
 	end process; 
 
@@ -182,6 +201,9 @@ begin
 					TALT <= not TALT;
 				end if; 
 			end if; 
+			if SS_RESTORE = '1' then
+				TALT <= SS_IN2(62);
+			end if;
 		end if;
 	end process;
 	
@@ -192,7 +214,10 @@ begin
 		EN			=> EN,
 		IR			=> NEXT_IR,
 		STATE		=> NEXT_STATE,
-		M			=> MC
+		M			=> MC,
+		SS_RESTORE => SS_RESTORE,
+		SS_MI_IN   => SS_IN4(59 downto 18),
+		SS_MI_OUT  => MC_MI
 	);
 	
 	process(MC, IR, STATE, TALT)
@@ -248,7 +273,10 @@ begin
 		VO    	=> VO,
 		NO   		=> NO,
 		ZO   		=> ZO,
-		RES		=> ALU_OUT
+		RES		=> ALU_OUT,
+		SS_RESTORE => SS_RESTORE,
+		SS_SC_IN   => SS_IN4(17),
+		SS_SC_OUT  => ALU_SC
 	);
 
 				  
@@ -270,6 +298,11 @@ begin
 					Y <= ALU_OUT;
 				end if; 
 			end if; 
+			if SS_RESTORE = '1' then
+				A <= SS_IN1(7 downto 0);
+				X <= SS_IN1(15 downto 8);
+				Y <= SS_IN1(23 downto 16);
+			end if;
 		end if;
 	end process;
 				  
@@ -287,6 +320,9 @@ begin
 					when others => null;
 				end case;
 			end if; 
+			if SS_RESTORE = '1' then
+				T <= SS_IN2(23 downto 16);
+			end if;
 		end if;
 	end process;
 	
@@ -306,6 +342,9 @@ begin
 					when others => null;
 				end case;
 			end if; 
+			if SS_RESTORE = '1' then
+				SP <= SS_IN1(31 downto 24);
+			end if;
 		end if;
 	end process;
 	
@@ -349,6 +388,9 @@ begin
 					P(FLAG_T) <= '0';  
 				end if;
 			end if;
+			if SS_RESTORE = '1' then
+				P <= SS_IN1(39 downto 32);
+			end if;
 		end if;
 	end process;
 	
@@ -367,6 +409,11 @@ begin
 					when others => null;
 				end case;
 			end if; 
+			if SS_RESTORE = '1' then
+				SH <= SS_IN2(39 downto 32);
+				DH <= SS_IN2(47 downto 40);
+				LH <= SS_IN2(55 downto 48);
+			end if;
 		end if;
 	end process;
 
@@ -392,6 +439,12 @@ begin
 					MPR_LAST <= A;
 				end if;
 			end if; 
+			if SS_RESTORE = '1' then
+				for i in 0 to 7 loop
+					MPR(i) <= SS_IN3(i*8+7 downto i*8);
+				end loop;
+				MPR_LAST <= SS_IN4(7 downto 0);
+			end if;
 		end if;
 	end process;
 	
@@ -432,6 +485,9 @@ begin
 			if EN = '1' then
 				DR <= DI;
 			end if; 
+			if SS_RESTORE = '1' then
+				DR <= SS_IN2(31 downto 24);
+			end if;
 		end if;
 	end process;
 	
@@ -448,7 +504,12 @@ begin
 		Y     		=> Y, 
 		DR    		=> DR,
 		PC     		=> PC, 
-		AA     		=> AA
+		AA     		=> AA,
+		SS_RESTORE  => SS_RESTORE,
+		SS_PC_IN    => SS_IN1(55 downto 40),
+		SS_AA_IN    => SS_IN2(15 downto 0),
+		SS_SC_IN    => SS_IN2(61),
+		SS_SC_OUT   => AG_SC
 	);
 	
 	--Interrupts
@@ -465,6 +526,10 @@ begin
 				elsif NMI_ACTIVE = '1' and LAST_CYCLE = '1' and EN = '1' then
 					NMI_SYNC <= '0';
 				end if;
+			end if;
+			if SS_RESTORE = '1' then
+				OLD_NMI_N <= SS_IN4(16);
+				NMI_SYNC <= SS_IN4(15);
 			end if;
 		end if;
 	end process; 
@@ -499,6 +564,15 @@ begin
 					IRQ2_INT <= not IRQ2_N and not P(FLAG_I);
 					IRQT_INT <= not IRQT_N and not P(FLAG_I);
 				end if;
+			end if;
+			if SS_RESTORE = '1' then
+				GOT_INT <= SS_IN4(8);
+				RES_INT <= SS_IN4(9);
+				NMI_INT <= SS_IN4(10);
+				IRQ1_INT <= SS_IN4(11);
+				IRQ2_INT <= SS_IN4(12);
+				IRQT_INT <= SS_IN4(13);
+				NMI_ACTIVE <= SS_IN4(14);
 			end if;
 		end if;
 	end process; 
@@ -555,17 +629,26 @@ begin
 	process(CLK, RST_N)
 	begin
 		if RST_N = '0' then
-			CS <= '0';
+			CS_R <= '0';
 		elsif rising_edge(CLK) then
 			if EN = '1' then
 				if IR(6 downto 0) = "1010100" and STATE = "00001" then
-					CS <= IR(7);
+					CS_R <= IR(7);
 				end if; 
 			end if; 
+			if SS_RESTORE = '1' then
+				CS_R <= SS_IN2(63);
+			end if;
 		end if;
 	end process;
 	
 	MCYCLE <= MC.MEM_CYCLE;
+	CS <= CS_R;
+
+	SS_OUT1 <= IR & PC & P & SP & Y & X & A;
+	SS_OUT2 <= CS_R & TALT & AG_SC & std_logic_vector(STATE) & LH & DH & SH & DR & T & AA;
+	SS_OUT3 <= MPR(7) & MPR(6) & MPR(5) & MPR(4) & MPR(3) & MPR(2) & MPR(1) & MPR(0);
+	SS_OUT4 <= "0000" & MC_MI & ALU_SC & OLD_NMI_N & NMI_SYNC & NMI_ACTIVE & IRQT_INT & IRQ2_INT & IRQ1_INT & NMI_INT & RES_INT & GOT_INT & MPR_LAST;
 	
 end rtl;
 	

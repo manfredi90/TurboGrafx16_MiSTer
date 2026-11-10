@@ -2,6 +2,8 @@ library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.STD_LOGIC_UNSIGNED.ALL;
 use IEEE.NUMERIC_STD.ALL;
+library work;
+use work.pBus_savestates.all;
 
 entity psg is
 	port (
@@ -17,7 +19,20 @@ entity psg is
 		-- DAC Interface
 		DAC_LATCH	: in std_logic;
 		LDATA		: out std_logic_vector(23 downto 0);
-		RDATA		: out std_logic_vector(23 downto 0)
+		RDATA		: out std_logic_vector(23 downto 0);
+
+		-- savestates
+		FREEZE      : in  std_logic := '0';
+		SS_RESTORE  : in  std_logic := '0';
+		SS_BUS_Din  : in  std_logic_vector(BUS_buswidth-1 downto 0) := (others => '0');
+		SS_BUS_Adr  : in  std_logic_vector(BUS_busadr-1 downto 0) := (others => '1');
+		SS_BUS_wren : in  std_logic := '0';
+		SS_BUS_rst  : in  std_logic := '0';
+		SS_BUS_Dout : out std_logic_vector(BUS_buswidth-1 downto 0);
+		SS_WAVE_A   : in  std_logic_vector(7 downto 0) := (others => '0');
+		SS_WAVE_D   : in  std_logic_vector(4 downto 0) := (others => '0');
+		SS_WAVE_WE  : in  std_logic := '0';
+		SS_WAVE_Q   : out std_logic_vector(4 downto 0)
 	);
 end psg;
 
@@ -87,12 +102,20 @@ signal MIX_CNT	: std_logic_vector(2 downto 0);
 signal LDATA_FF	: std_logic_vector(23 downto 0);
 signal RDATA_FF	: std_logic_vector(23 downto 0);
 
+-- savestates: 8 = globals, 9 + 2*ch = channel registers, 10 + 2*ch = channel counters
+type ss_regs_t is array(0 to 12) of std_logic_vector(63 downto 0);
+signal SS_IN, SS_OUT, SS_DO : ss_regs_t;
+signal SS_WAVE_CH  : integer range 0 to 5;
+signal SS_WAVE_OK  : std_logic;
+signal SS_WAVE_IDX : integer range 0 to 31;
+
 begin
 
 -- CPU Interface
 process( CLK )
 begin
 	if rising_edge( CLK ) then
+		if FREEZE = '0' then
 
 		for i in 0 to 5 loop
 			CH(i).WF_RES <= '0';
@@ -174,12 +197,40 @@ begin
 				end case;
 			end if;
 		end if;
+		end if;
+
+		if SS_RESTORE = '1' then
+			CHSEL <= to_integer(unsigned(SS_IN(0)(2 downto 0)));
+			LMAL <= SS_IN(0)(6 downto 3);
+			RMAL <= SS_IN(0)(10 downto 7);
+			for i in 0 to 5 loop
+				CH(i).FREQ     <= SS_IN(1+i*2)(11 downto 0);
+				CH(i).DDA      <= SS_IN(1+i*2)(12);
+				CH(i).CHON     <= SS_IN(1+i*2)(13);
+				CH(i).AL       <= SS_IN(1+i*2)(18 downto 14);
+				CH(i).LAL      <= SS_IN(1+i*2)(22 downto 19);
+				CH(i).RAL      <= SS_IN(1+i*2)(26 downto 23);
+				CH(i).NG_FREQ  <= SS_IN(1+i*2)(31 downto 27);
+				CH(i).NE       <= SS_IN(1+i*2)(32);
+				CH(i).LFO_FREQ <= SS_IN(1+i*2)(58 downto 51);
+				CH(i).LFCTL    <= SS_IN(1+i*2)(60 downto 59);
+				CH(i).LFTRG    <= SS_IN(1+i*2)(61);
+				CH(i).DA_OUT   <= SS_IN(2+i*2)(34 downto 30);
+				CH(i).WF_RES   <= '0';
+				CH(i).WF_INC   <= '0';
+			end loop;
+		end if;
+
+		if SS_WAVE_WE = '1' and SS_WAVE_OK = '1' then
+			CH(SS_WAVE_CH).WF_DATA(SS_WAVE_IDX) <= SS_WAVE_D;
+		end if;
 	end if;
 end process;
 
 
 process( CLK ) begin
 	if rising_edge( CLK ) then
+		if FREEZE = '0' then
 		for i in 0 to 5 loop
 			if RESET_N = '0' then
 				CH(i).GL_OUT <= (others => '0');
@@ -270,6 +321,20 @@ process( CLK ) begin
 				end if;
 			end if;
 		end loop;
+		end if;
+
+		if SS_RESTORE = '1' then
+			for i in 0 to 5 loop
+				CH(i).WF_ADDR <= SS_IN(1+i*2)(37 downto 33);
+				CH(i).WF_CNT  <= SS_IN(1+i*2)(50 downto 38);
+				CH(i).LFSR    <= SS_IN(2+i*2)(17 downto 0);
+				CH(i).NG_CNT  <= SS_IN(2+i*2)(29 downto 18);
+				CH(i).LFO_CNT <= SS_IN(2+i*2)(42 downto 35);
+				CH(i).WF_OUT  <= SS_IN(2+i*2)(47 downto 43);
+				CH(i).NG_OUT  <= SS_IN(2+i*2)(52 downto 48);
+				CH(i).GL_OUT  <= SS_IN(2+i*2)(57 downto 53);
+			end loop;
+		end if;
 	end if;
 end process;
 
@@ -277,7 +342,9 @@ process( CLK )
 	variable DATA: std_logic_vector(4 downto 0);
 begin
 	if rising_edge( CLK ) then
-		if RESET_N = '0' then
+		if FREEZE = '1' then
+			null;
+		elsif RESET_N = '0' then
 			for i in 0 to 5 loop
 				CH(i).LFO_ADD <= (others => '0');
 			end loop;
@@ -290,6 +357,9 @@ begin
 			when "11" =>   CH(0).LFO_ADD(7 downto 0) <= DATA(3 downto 0) & "0000";
 			when others => CH(0).LFO_ADD <= (others => '0');
 			end case;
+		end if;
+		if SS_RESTORE = '1' then
+			CH(0).LFO_ADD <= SS_IN(0)(22 downto 11);
 		end if;
 	end if;
 end process;
@@ -305,7 +375,9 @@ port map (
 process( CLK )
 begin
 	if rising_edge( CLK ) then
-		if RESET_N = '0' then
+		if FREEZE = '1' then
+			null;
+		elsif RESET_N = '0' then
 			LDATA_FF <= (others => '0');
 			RDATA_FF <= (others => '0');
 			MIX <= MIX_WAIT;
@@ -359,6 +431,44 @@ end process;
 
 LDATA <= LDATA_FF;
 RDATA <= RDATA_FF;
+
+-- savestates
+SS_OUT(0) <= (63 downto 23 => '0') & CH(0).LFO_ADD & RMAL & LMAL & std_logic_vector(to_unsigned(CHSEL, 3));
+
+gSS_CH: for i in 0 to 5 generate
+	SS_OUT(1+i*2) <= "00" & CH(i).LFTRG & CH(i).LFCTL & CH(i).LFO_FREQ & CH(i).WF_CNT & CH(i).WF_ADDR & CH(i).NE & CH(i).NG_FREQ &
+	                 CH(i).RAL & CH(i).LAL & CH(i).AL & CH(i).CHON & CH(i).DDA & CH(i).FREQ;
+	SS_OUT(2+i*2) <= "000000" & CH(i).GL_OUT & CH(i).NG_OUT & CH(i).WF_OUT & CH(i).LFO_CNT & CH(i).DA_OUT & CH(i).NG_CNT & CH(i).LFSR;
+end generate;
+
+gSS: for i in 0 to 12 generate
+	iREG : entity work.eReg_SavestateV generic map (8 + i, (others => '0'))
+	port map (CLK, SS_BUS_Din, SS_BUS_Adr, SS_BUS_wren, SS_BUS_rst, SS_DO(i), SS_OUT(i), SS_IN(i));
+end generate;
+
+process(SS_DO)
+	variable v : std_logic_vector(63 downto 0);
+begin
+	v := (others => '0');
+	for i in 0 to 12 loop
+		v := v or SS_DO(i);
+	end loop;
+	SS_BUS_Dout <= v;
+end process;
+
+SS_WAVE_OK  <= '1' when unsigned(SS_WAVE_A(7 downto 5)) < 6 else '0';
+SS_WAVE_CH  <= to_integer(unsigned(SS_WAVE_A(7 downto 5))) when SS_WAVE_OK = '1' else 0;
+SS_WAVE_IDX <= to_integer(unsigned(SS_WAVE_A(4 downto 0)));
+
+process( CLK ) begin
+	if rising_edge( CLK ) then
+		if SS_WAVE_OK = '1' then
+			SS_WAVE_Q <= CH(SS_WAVE_CH).WF_DATA(SS_WAVE_IDX);
+		else
+			SS_WAVE_Q <= (others => '0');
+		end if;
+	end if;
+end process;
 
 end rtl;
 

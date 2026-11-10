@@ -11,7 +11,11 @@ entity HUC6280_MC is
 		  EN		: in std_logic;
         IR		: in std_logic_vector(7 downto 0);
         STATE	: in unsigned(4 downto 0);
-        M		: out MCode_r
+        M		: out MCode_r;
+
+        SS_RESTORE : in std_logic := '0';
+        SS_MI_IN   : in std_logic_vector(41 downto 0) := (others => '0');
+        SS_MI_OUT  : out std_logic_vector(41 downto 0)
     );
 end HUC6280_MC;
 
@@ -6988,8 +6992,16 @@ begin
 					MI <= M_TAB3(to_integer(N));
 				end if;
 			end if;
+			if SS_RESTORE = '1' then
+				MI <= (SS_MI_IN(41 downto 40), SS_MI_IN(39 downto 37), SS_MI_IN(36 downto 35), SS_MI_IN(34 downto 32),
+				       SS_MI_IN(31 downto 29), SS_MI_IN(28 downto 23), SS_MI_IN(22 downto 20), SS_MI_IN(19 downto 17),
+				       SS_MI_IN(16 downto 14), SS_MI_IN(13 downto 10), SS_MI_IN(9 downto 5), SS_MI_IN(4 downto 1), SS_MI_IN(0));
+			end if;
 		end if;
 	end process;
+
+	SS_MI_OUT <= MI.STATE_CTRL & MI.ADDR_BUS & MI.LOAD_SDLH & MI.LOAD_P & MI.LOAD_T & MI.ADDR_CTRL & MI.LOAD_PC &
+	             MI.LOAD_SP & MI.AXY_CTRL & MI.ALUBUS_CTRL & MI.ALUCtrl & MI.OUT_BUS & MI.MEM_CYCLE;
 
 	M <= (MI.STATE_CTRL,
 			MI.ADDR_BUS,

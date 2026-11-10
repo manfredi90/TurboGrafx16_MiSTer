@@ -79,7 +79,7 @@ video_freak video_freak
 
 `include "build_id.v"
 parameter CONF_STR = {
-	"TGFX16;;",
+	"TGFX16;SS3E000000:40000;",
 	"FS0,PCEBIN,Load TurboGrafx;",
 `ifndef DEBUG_BUILD
 	"FS1,SGX,Load SuperGrafx;",
@@ -97,6 +97,11 @@ parameter CONF_STR = {
 	"D0RG,Load Backup RAM;",
 	"D0R7,Save Backup RAM;",
 	"D0ON,Autosave,OFF,ON;",
+	"-;",
+	"o7,Savestates to SDCard,On,Off;",
+	"o89,Savestate Slot,1,2,3,4;",
+	"d7rA,Save state(Alt+F1-F4);",
+	"d7rB,Restore state(F1-F4);",
 	"-;",
 	"P1,Audio & Video;",
 	"P1-;",
@@ -138,9 +143,23 @@ parameter CONF_STR = {
 	"H5OQR,Special,None,Mouse,Pachinko,XE-1AP;",
 	"H5-;",
 	"R0,Reset;",
-	"J1,Button I,Button II,Select,Run,Button III,Button IV,Button V,Button VI;",
+	"J1,Button I,Button II,Select,Run,Button III,Button IV,Button V,Button VI,Savestates;",
 	"jn,A,B,Select,Start,X,Y,L,R;",
 	"jp,A,B,Select,Start,L,R,Y,X;",
+	"I,",
+	"Slot=DPAD|Save/Load=Run+DPAD,",
+	"Active Slot 1,",
+	"Active Slot 2,",
+	"Active Slot 3,",
+	"Active Slot 4,",
+	"Save to state 1,",
+	"Restore state 1,",
+	"Save to state 2,",
+	"Restore state 2,",
+	"Save to state 3,",
+	"Restore state 3,",
+	"Save to state 4,",
+	"Restore state 4;",
 	"V,v",`BUILD_DATE
 };
 
@@ -181,10 +200,12 @@ pll pll
 
 ///////////////////////////////////////////////////
 
-wire [63:0] status;
+wire [127:0] status;
 wire  [1:0] buttons;
 
-wire [11:0] joy_0, joy_1, joy_2, joy_3, joy_4;
+wire [11:0] joy_1, joy_2, joy_3, joy_4;
+wire [15:0] joy_0_w;
+wire [11:0] joy_0 = joy_0_w[11:0];
 wire [15:0] joy_a, joy_b;
 wire  [7:0] pd_0;
 
@@ -222,7 +243,11 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({en216p, snac, 1'd1, use_sdr, ~use_sdr, ~gg_avail,~bk_ena}),
+	.status_menumask({ss_allow, en216p, snac, 1'd1, use_sdr, ~use_sdr, ~gg_avail,~bk_ena}),
+	.status_in({status[127:42], ss_slot, status[39:0]}),
+	.status_set(ss_status_update),
+	.info_req(ss_info_req),
+	.info(ss_info),
 	.forced_scandoubler(forced_scandoubler),
 
 	.sdram_sz(sdram_sz),
@@ -249,7 +274,7 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 	.img_readonly(img_readonly),
 	.img_size(img_size),
 
-	.joystick_0(joy_0),
+	.joystick_0(joy_0_w),
 	.joystick_1(joy_1),
 	.joystick_2(joy_2),
 	.joystick_3(joy_3),
@@ -382,7 +407,23 @@ pce_top #(LITE) pce_top
 	.VIDEO_VS(vs),
 	.VIDEO_HS(hs),
 	.VIDEO_HBL(hbl),
-	.VIDEO_VBL(vbl)
+	.VIDEO_VBL(vbl),
+
+	.SS_FREEZE_REQ(ss_freeze_req),
+	.SS_PAUSED(ss_paused),
+	.SS_RESTORE(ss_restore),
+	.SS_REFETCH(ss_refetch),
+	.SS_BUS_Din(ss_bus_din),
+	.SS_BUS_Adr(ss_bus_adr),
+	.SS_BUS_wren(ss_bus_wren),
+	.SS_BUS_rst(ss_bus_rst),
+	.SS_BUS_Dout(ss_core_dout),
+	.SS_MEM_ACT(ss_saving | ss_loading),
+	.SS_MEM_TYPE(ss_mem_type),
+	.SS_MEM_ADDR(ss_mem_addr[16:0]),
+	.SS_MEM_WE(ss_mem_we),
+	.SS_MEM_WD(ss_mem_wd),
+	.SS_MEM_RD(ss_mem_rd)
 );
 
 
@@ -735,6 +776,12 @@ assign DDRAM_CLK = clk_ram;
 ddram ddram
 (
 	.*,
+	.DDRAM_BURSTCNT(core_DDRAM_BURSTCNT),
+	.DDRAM_ADDR(core_DDRAM_ADDR),
+	.DDRAM_RD(core_DDRAM_RD),
+	.DDRAM_DIN(core_DDRAM_DIN),
+	.DDRAM_BE(core_DDRAM_BE),
+	.DDRAM_WE(core_DDRAM_WE),
 	.clkref(ce_rom),
 
 	.wraddr(cart_download ? romwr_a : {3'b001,cd_ram_a}),
@@ -912,9 +959,10 @@ reg [1:0] joyrept_4;
 reg [1:0] mouse_cnt;
 reg [7:0] ms_x, ms_y;
 
+reg  [1:0] last_gp;
+reg        high_buttons = 0;
+
 always @(posedge clk_sys) begin : input_block
-	reg  [1:0] last_gp;
-	reg        high_buttons = 0;
 	reg [14:0] mouse_to;
 	reg        ms_stb;
 	reg  [7:0] msr_x, msr_y;
@@ -975,6 +1023,14 @@ always @(posedge clk_sys) begin : input_block
 	end
 	else if (joy_out[0] && ~last_gp[0] && (status[2] | status[27]) && (status[27:26] != 2'b11)) begin	// suppress if XE-1AP
 		joy_port <= joy_port + 3'd1;
+	end
+
+	if (ss_restore) begin
+		joy_port     <= ss_input_in[2:0];
+		high_buttons <= ss_input_in[3];
+		scan_counter <= ss_input_in[7:4];
+		last_gp      <= ss_input_in[9:8];
+		mouse_cnt    <= ss_input_in[11:10];
 	end
 end
 
@@ -1195,6 +1251,177 @@ end
 //		esc <= 0;
 //	end
 //end
+
+////////////////////////////  SAVESTATES  /////////////////////////////
+
+wire        ss_save, ss_load, ss_info_req, ss_status_update;
+wire  [7:0] ss_info;
+wire  [1:0] ss_slot;
+
+reg         ss_rom_loaded = 0;
+always @(posedge clk_sys) if (cart_download) ss_rom_loaded <= 1;
+
+wire        ss_allow = ss_rom_loaded & ~cd_en & ~sgx;
+
+savestate_ui #(.INFO_TIMEOUT_BITS(25)) savestate_ui
+(
+	.clk            (clk_sys),
+	.ps2_key        (ps2_key),
+	.allow_ss       (ss_allow & ~reset & ~cart_download),
+	.joySS          (joy_0_w[12]),
+	.joyRight       (joy_0_w[0]),
+	.joyLeft        (joy_0_w[1]),
+	.joyDown        (joy_0_w[2]),
+	.joyUp          (joy_0_w[3]),
+	.joyStart       (joy_0_w[7]),
+	.status_slot    (status[41:40]),
+	.OSD_saveload   (status[43:42]),
+	.ss_save        (ss_save),
+	.ss_load        (ss_load),
+	.ss_info_req    (ss_info_req),
+	.ss_info        (ss_info),
+	.statusUpdate   (ss_status_update),
+	.selected_slot  (ss_slot)
+);
+
+wire        ss_busy, ss_saving, ss_loading, ss_sleep, ss_restore, ss_load_done;
+wire        ss_paused;
+wire [63:0] ss_bus_din, ss_bus_dout, ss_core_dout, ss_input_dout, ss_id_dout;
+wire  [9:0] ss_bus_adr;
+wire        ss_bus_wren, ss_bus_rst;
+wire [24:0] ss_mem_addr;
+wire  [2:0] ss_mem_type;
+wire        ss_mem_we;
+wire  [7:0] ss_mem_wd, ss_mem_rd;
+wire [63:0] ss_ddr_din, ss_ddr_dout;
+wire [25:0] ss_ddr_adr;
+wire  [7:0] ss_ddr_be;
+wire        ss_ddr_rnw, ss_ddr_req, ss_ddr_done;
+
+// requests wait until the engine is free
+reg         ss_req_save = 0, ss_req_load = 0;
+reg         ss_pend_save = 0, ss_pend_load = 0;
+reg  [7:0]  ss_hold = 0;
+reg         ss_refetch = 0;
+reg  [1:0]  ss_req_slot;
+
+always @(posedge clk_sys) begin
+	ss_req_save <= 0;
+	ss_req_load <= 0;
+	ss_refetch  <= 0;
+
+	if (ss_save) ss_pend_save <= 1;
+	if (ss_load) ss_pend_load <= 1;
+
+	if (reset | cart_download) begin
+		ss_pend_save <= 0;
+		ss_pend_load <= 0;
+	end
+	else if (!ss_busy && !ss_hold && !ss_req_save && !ss_req_load) begin
+		ss_req_slot <= ss_slot;
+		if (ss_pend_save) begin
+			ss_pend_save <= 0;
+			ss_req_save  <= 1;
+		end
+		else if (ss_pend_load) begin
+			ss_pend_load <= 0;
+			ss_req_load  <= 1;
+		end
+	end
+
+	// after a load the CPU's current ROM read is done again before the core runs
+	if (ss_load_done) ss_hold <= 8'd200;
+	else if (ss_hold) ss_hold <= ss_hold - 1'd1;
+	if (ss_hold == 8'd150) ss_refetch <= 1;
+end
+
+wire ss_freeze_req = ss_sleep | (ss_hold != 0);
+
+savestates savestates
+(
+	.clk                    (clk_sys),
+	.restore                (ss_restore),
+	.load_done              (ss_load_done),
+	.increaseSSHeaderCount  (~status[39]),
+	.save                   (ss_req_save),
+	.load                   (ss_req_load),
+	.savestate_address      (26'h3800000 + {ss_req_slot, 16'h0000}),
+	.savestate_busy         (ss_busy),
+	.paused                 (ss_paused),
+	.BUS_Din                (ss_bus_din),
+	.BUS_Adr                (ss_bus_adr),
+	.BUS_wren               (ss_bus_wren),
+	.BUS_rst                (ss_bus_rst),
+	.BUS_Dout               (ss_bus_dout),
+	.loading_savestate      (ss_loading),
+	.saving_savestate       (ss_saving),
+	.sleep_savestate        (ss_sleep),
+	.Save_RAMAddr           (ss_mem_addr),
+	.Save_RAMRdEn           (),
+	.Save_RAMWrEn           (ss_mem_we),
+	.Save_RAMWriteData      (ss_mem_wd),
+	.Save_RAMReadData       (ss_mem_rd),
+	.Save_RAMType           (ss_mem_type),
+	.bus_out_Din            (ss_ddr_din),
+	.bus_out_Dout           (ss_ddr_dout),
+	.bus_out_Adr            (ss_ddr_adr),
+	.bus_out_rnw            (ss_ddr_rnw),
+	.bus_out_ena            (ss_ddr_req),
+	.bus_out_be             (ss_ddr_be),
+	.bus_out_done           (ss_ddr_done)
+);
+
+// 0: format id, 7: controller ports
+wire [63:0] ss_id_unused;
+eReg_SavestateV #(10'd0, 64'd0) ss_reg_id (clk_sys, ss_bus_din, ss_bus_adr, ss_bus_wren, ss_bus_rst, ss_id_dout, 64'h0000000131454350, ss_id_unused);
+
+wire [63:0] ss_input_in;
+eReg_SavestateV #(10'd7, 64'd0) ss_reg_input (clk_sys, ss_bus_din, ss_bus_adr, ss_bus_wren, ss_bus_rst, ss_input_dout,
+	{52'd0, mouse_cnt, last_gp, scan_counter, high_buttons, joy_port}, ss_input_in);
+
+assign ss_bus_dout = ss_core_dout | ss_input_dout | ss_id_dout;
+
+wire  [7:0] core_DDRAM_BURSTCNT, ss_DDRAM_BURSTCNT;
+wire [28:0] core_DDRAM_ADDR, ss_DDRAM_ADDR;
+wire [63:0] core_DDRAM_DIN, ss_DDRAM_DIN;
+wire  [7:0] core_DDRAM_BE, ss_DDRAM_BE;
+wire        core_DDRAM_RD, ss_DDRAM_RD;
+wire        core_DDRAM_WE, ss_DDRAM_WE;
+
+ss_ddram ss_ddram
+(
+	.clk_sys          (clk_sys),
+	.adr              (ss_ddr_adr),
+	.din              (ss_ddr_din),
+	.be               (ss_ddr_be),
+	.rnw              (ss_ddr_rnw),
+	.req              (ss_ddr_req),
+	.done             (ss_ddr_done),
+	.dout             (ss_ddr_dout),
+
+	.DDRAM_CLK        (clk_ram),
+	.DDRAM_BUSY       (DDRAM_BUSY),
+	.DDRAM_BURSTCNT   (ss_DDRAM_BURSTCNT),
+	.DDRAM_ADDR       (ss_DDRAM_ADDR),
+	.DDRAM_DOUT       (DDRAM_DOUT),
+	.DDRAM_DOUT_READY (DDRAM_DOUT_READY),
+	.DDRAM_RD         (ss_DDRAM_RD),
+	.DDRAM_DIN        (ss_DDRAM_DIN),
+	.DDRAM_BE         (ss_DDRAM_BE),
+	.DDRAM_WE         (ss_DDRAM_WE)
+);
+
+// DDR3 belongs to the savestate engine only while the core is frozen
+reg ss_ddr_sel = 0;
+always @(posedge clk_ram) ss_ddr_sel <= ss_sleep & ss_paused;
+
+assign DDRAM_BURSTCNT = ss_ddr_sel ? ss_DDRAM_BURSTCNT : core_DDRAM_BURSTCNT;
+assign DDRAM_ADDR     = ss_ddr_sel ? ss_DDRAM_ADDR     : core_DDRAM_ADDR;
+assign DDRAM_DIN      = ss_ddr_sel ? ss_DDRAM_DIN      : core_DDRAM_DIN;
+assign DDRAM_BE       = ss_ddr_sel ? ss_DDRAM_BE       : core_DDRAM_BE;
+assign DDRAM_RD       = ss_ddr_sel ? ss_DDRAM_RD       : core_DDRAM_RD;
+assign DDRAM_WE       = ss_ddr_sel ? ss_DDRAM_WE       : core_DDRAM_WE;
+
 
 `ifdef DEBUG_BUILD
 

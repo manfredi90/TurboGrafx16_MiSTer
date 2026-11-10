@@ -1,3 +1,7 @@
+set_global_assignment -name VHDL_FILE rtl/savestates/bus_savestates.vhd
+set_global_assignment -name VHDL_FILE rtl/savestates/savestates.vhd
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestates/ss_ddram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestates/savestate_ui.sv
 set_global_assignment -name QIP_FILE rtl/cd/cd.qip
 set_global_assignment -name QIP_FILE rtl/HUC6280/HUC6280.qip
 set_global_assignment -name VHDL_FILE rtl/huc6202.vhd

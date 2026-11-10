@@ -2,8 +2,12 @@ library IEEE;
 use IEEE.std_logic_1164.all;
 use ieee.numeric_std.all;
 library work;
+use work.pBus_savestates.all;
 
 entity HUC6270 is
+	generic(
+		SS_BASE : integer := 32
+	);
 	port( 
 		CLK		: in std_logic;
 		RST_N		: in std_logic;
@@ -64,7 +68,22 @@ entity HUC6270 is
 		HDE_DBG 				: out std_logic_vector(6 downto 0);
 		VDS_END_POS_DBG 	: out unsigned(9 downto 0);
 		VDISP_END_POS_DBG : out unsigned(9 downto 0);
-		VDE_END_POS_DBG 	: out unsigned(9 downto 0)
+		VDE_END_POS_DBG 	: out unsigned(9 downto 0);
+
+		-- savestates
+		FREEZE      : in  std_logic := '0';
+		SS_IDLE     : out std_logic;
+		SS_RESTORE  : in  std_logic := '0';
+		SS_BUS_Din  : in  std_logic_vector(BUS_buswidth-1 downto 0) := (others => '0');
+		SS_BUS_Adr  : in  std_logic_vector(BUS_busadr-1 downto 0) := (others => '1');
+		SS_BUS_wren : in  std_logic := '0';
+		SS_BUS_rst  : in  std_logic := '0';
+		SS_BUS_Dout : out std_logic_vector(BUS_buswidth-1 downto 0);
+		SS_SAT_SEL  : in  std_logic := '0';
+		SS_SAT_A    : in  std_logic_vector(7 downto 0) := (others => '0');
+		SS_SAT_D    : in  std_logic_vector(15 downto 0) := (others => '0');
+		SS_SAT_WE   : in  std_logic := '0';
+		SS_SAT_Q    : out std_logic_vector(15 downto 0)
 	);
 end HUC6270;
 
@@ -292,6 +311,16 @@ architecture rtl of HUC6270 is
 	signal CLR_A			: unsigned(7 downto 0);
 	signal CLR_WE			: std_logic;
 
+	-- savestates: SS_BASE+0..4 = REGS, SS_BASE+5..9 = internal state
+	type ss_regs_t is array(0 to 4) of std_logic_vector(63 downto 0);
+	signal SS_R, SS_RB, SS_I, SS_IB : ss_regs_t;
+	type ss_dout_t is array(0 to 9) of std_logic_vector(63 downto 0);
+	signal SS_DO			: ss_dout_t;
+	signal SS_RC_UPD		: std_logic;
+	signal SAT_ADDR_B		: std_logic_vector(7 downto 0);
+	signal SAT_DATA_B		: std_logic_vector(15 downto 0);
+	signal SAT_WE_B		: std_logic;
+
 begin
 
 	process(CLK, RST_N)
@@ -307,6 +336,7 @@ begin
 			CM <= '0';
 			RES7M <= "0";
 		elsif rising_edge(CLK) then
+			if FREEZE = '0' then
 
 			FETCH_CE <= not FETCH_CE;
 			if FETCH_CE = '1' then
@@ -348,6 +378,21 @@ begin
 			if DCK_CE = '0' and HSYNC_F = '1' then
 				RES7M <= "1";
 			end if; 
+			end if;
+			if SS_RESTORE = '1' then
+				DOT_CNT <= unsigned(SS_I(2)(18 downto 16));
+				TILE_CNT <= unsigned(SS_I(2)(25 downto 19));
+				DOTS_REMAIN <= unsigned(SS_I(2)(28 downto 26));
+				TILE_ZERO <= SS_I(2)(29);
+				HSW <= SS_I(2)(34 downto 30);
+				HDS <= SS_I(2)(41 downto 35);
+				HDW <= SS_I(2)(48 downto 42);
+				HDE <= SS_I(2)(55 downto 49);
+				CM <= SS_I(2)(56);
+				RES7M <= SS_I(2)(57 downto 57);
+				FETCH_CE <= '0';
+				FETCH_DOT <= (others => '0');
+			end if;
 		end if;
 	end process;
 	
@@ -389,6 +434,7 @@ begin
 			BB <= '0';
 			SB <= '0';
 		elsif rising_edge(CLK) then
+			if FREEZE = '0' then
 			if DCK_CE = '1' then
 				if VSYNC_F = '1' then
 					VDISP <= '0';
@@ -471,6 +517,29 @@ begin
 					SB <= CR_SB;
 				end if;
 			end if; 
+			end if;
+			if SS_RESTORE = '1' then
+				DISP_CNT <= unsigned(SS_I(3)(9 downto 0));
+				DISP_CNT_INC <= SS_I(3)(10);
+				DISP_BREAK_EN <= SS_I(3)(11);
+				DISP_BREAK_LATCH <= SS_I(3)(12);
+				VDISP <= SS_I(3)(13);
+				BURST <= SS_I(3)(14);
+				RC_CNT <= unsigned(SS_I(3)(24 downto 15));
+				RC_CNT_UPDATED := SS_I(3)(25);
+				VSW <= SS_I(3)(30 downto 26);
+				VDS <= SS_I(3)(38 downto 31);
+				VDW <= SS_I(3)(47 downto 39);
+				VDE <= SS_I(3)(55 downto 48);
+				VM <= SS_I(3)(57 downto 56);
+				SM <= SS_I(3)(59 downto 58);
+				SCREEN <= SS_I(3)(62 downto 60);
+				BB <= SS_I(4)(0);
+				SB <= SS_I(4)(1);
+				BG_FETCH <= '0';
+				BG_OUT <= '0';
+			end if;
+			SS_RC_UPD <= RC_CNT_UPDATED;
 		end if;
 	end process;
 	
@@ -673,6 +742,7 @@ begin
 			BG_SR3 <= (others=>'0');
 			BG_SRC <= (others=>(others=>'0'));
 		elsif rising_edge(CLK) then
+			if FREEZE = '0' then
 			if DCK_CE = '1' then
 				case SLOT is
 					when BAT =>
@@ -727,6 +797,12 @@ begin
 					OFS_X <= unsigned(BXR);
 				end if; 
 			end if; 
+			end if;
+			if SS_RESTORE = '1' then
+				OFS_X <= unsigned(SS_I(4)(11 downto 2));
+				OFS_Y <= unsigned(SS_I(4)(20 downto 12));
+				BG_X <= unsigned(SS_I(4)(30 downto 21));
+			end if;
 		end if;
 	end process;
 	
@@ -742,11 +818,16 @@ begin
 		address_a=> DMAS_SAT_ADDR,
 		wren_a	=> DMAS_SAT_WE,
 		
-		address_b=> SAT_ADDR,
-		data_b   => (others => '0'),
-		wren_b   => CLR_WE,
+		address_b=> SAT_ADDR_B,
+		data_b   => SAT_DATA_B,
+		wren_b   => SAT_WE_B,
 		q_b		=> SAT_Q
 	);
+
+	SAT_ADDR_B <= SS_SAT_A  when SS_SAT_SEL = '1' else SAT_ADDR;
+	SAT_DATA_B <= SS_SAT_D  when SS_SAT_SEL = '1' else (others => '0');
+	SAT_WE_B   <= SS_SAT_WE when SS_SAT_SEL = '1' else CLR_WE;
+	SS_SAT_Q   <= SAT_Q;
 
 	CLR_A  <= CLR_A + 1 when rising_edge(CLK);
 	CLR_WE <= CLR_MEM   when rising_edge(CLK);
@@ -816,6 +897,7 @@ begin
 			SPR_TILE_SAVE <= '0';
 			IRQ_OVF <= '0';
 		elsif rising_edge(CLK) then
+			if FREEZE = '0' then
 			SPR_TILE_SAVE <= '0';
 			if DCK_CE = '1' then
 				if TILE_CNT = HDS_END_POS and DOT_CNT = 3 and DISP_CNT >= VDS_END_POS and DISP_CNT < VDISP_END_POS then
@@ -969,6 +1051,13 @@ begin
 			if CS_N = '0' and RD_N = '0' and CPU_CE = '1' and A(1) = '0' and (BYTEWORD = '0' or A(0) = '0') then
 				IRQ_OVF <= '0';						
 			end if; 
+			end if;
+			if SS_RESTORE = '1' then
+				IRQ_OVF <= SS_I(1)(49);
+				SPR_EVAL <= '0';
+				SPR_FETCH <= '0';
+				SPR_TILE_SAVE <= '0';
+			end if;
 		end if;
 	end process;
 	
@@ -988,6 +1077,7 @@ begin
 			SPR_LINE_CLR <= '0';
 			IRQ_COL <= '0';
 		elsif rising_edge(CLK) then
+			if FREEZE = '0' then
 			SPR_LINE_WE <= (others=>'0');
 			if SPR_TILE_SAVE = '1' or SPR_TILE_PIX /= 0 then
 				for i in 0 to 1 loop
@@ -1037,6 +1127,11 @@ begin
 			if CS_N = '0' and RD_N = '0' and CPU_CE = '1' and A(1) = '0' and (BYTEWORD = '0' or A(0) = '0') then
 				IRQ_COL <= '0';
 			end if; 
+			end if;
+			if SS_RESTORE = '1' then
+				IRQ_COL <= SS_I(1)(50);
+				SPR_LINE_CLR <= '0';
+			end if;
 		end if;
 	end process;
 	
@@ -1079,6 +1174,7 @@ begin
 			GRID_BG <= (others=>'0');
 			GRID_SP <= (others=>'0');
 		elsif rising_edge(CLK) then
+			if FREEZE = '0' then
 			if DCK_CE = '1' then
 				BG_COLOR(7) <= (others=>'0');
 				SPR_COLOR(7) <= (others=>'0');
@@ -1121,6 +1217,7 @@ begin
 					GRID_SP(i) <= GRID_SP(i+1);
 				end loop;
 			end if; 
+			end if;
 		end if;
 	end process;
 
@@ -1175,6 +1272,7 @@ begin
 			BYRH_SET <= '0';
 			VDISP_OLD <= '0';
 		elsif rising_edge(CLK) then
+			if FREEZE = '0' then
 			IO_BYRL_WR <= '0';
 			IO_BYRH_WR <= '0';
 			if CS_N = '0' and WR_N = '0' and CPU_CE = '1' then
@@ -1421,6 +1519,44 @@ begin
 					BYRH_SET <= '1';
 				end if;
 			end if;
+			end if;
+			if SS_RESTORE = '1' then
+				AR <= SS_I(0)(4 downto 0);
+				VRR <= SS_I(0)(20 downto 5);
+				CPURD_PEND <= SS_I(0)(29);
+				CPUWR_PEND <= SS_I(0)(30);
+				CPURD_PEND2 <= SS_I(0)(31);
+				CPUWR_PEND2 <= SS_I(0)(32);
+				CPURD_EXEC <= SS_I(0)(33);
+				CPUWR_EXEC <= SS_I(0)(34);
+				CPU_BUSY <= SS_I(0)(35);
+				CPU_BUSY_CLEAR <= SS_I(0)(36);
+				CPU_VRAM_ADDR <= SS_I(0)(52 downto 37);
+				IO_BYRL_SET <= SS_I(0)(53);
+				IO_BYRH_SET <= SS_I(0)(54);
+				IO_BYRL_WR <= SS_I(0)(55);
+				IO_BYRH_WR <= SS_I(0)(56);
+				BXR_SET <= SS_I(0)(57);
+				BYRL_SET <= SS_I(0)(58);
+				BYRH_SET <= SS_I(0)(59);
+				VDISP_OLD <= SS_I(0)(60);
+				CPU_VRAM_DATA <= SS_I(1)(15 downto 0);
+				DMA_PEND <= SS_I(1)(16);
+				DMA_WR <= SS_I(1)(17);
+				DMA_EXEC <= SS_I(1)(18);
+				DMAS_PEND <= SS_I(1)(19);
+				DMAS_EXEC <= SS_I(1)(20);
+				DMA_BUF <= SS_I(1)(36 downto 21);
+				DMAS_SAT_ADDR <= SS_I(1)(44 downto 37);
+				IRQ_DMA <= SS_I(1)(45);
+				IRQ_RCR <= SS_I(1)(46);
+				IRQ_DMAS <= SS_I(1)(47);
+				IRQ_VBL <= SS_I(1)(48);
+				DMAS_VRAM_ADDR <= SS_I(2)(15 downto 0);
+				for i in 0 to 19 loop
+					REGS(i) <= SS_R(i / 4)((i mod 4) * 16 + 15 downto (i mod 4) * 16);
+				end loop;
+			end if;
 		end if;
 	end process;
 	
@@ -1430,9 +1566,15 @@ begin
 			SR_LATCH <= (others=>'0');
 			RD_N_OLD <= '1';
 		elsif rising_edge(CLK) then
+			if FREEZE = '0' then
 			RD_N_OLD <= RD_N;
 			if RD_N = '0' and RD_N_OLD = '1' then
 				SR_LATCH <= CPU_BUSY & IRQ_VBL & IRQ_DMA & IRQ_DMAS & IRQ_RCR & IRQ_OVF & IRQ_COL;
+			end if;
+			end if;
+			if SS_RESTORE = '1' then
+				SR_LATCH <= SS_I(0)(27 downto 21);
+				RD_N_OLD <= SS_I(0)(28);
 			end if;
 		end if;
 	end process;
@@ -1517,5 +1659,40 @@ begin
 	VDS_END_POS_DBG <= VDS_END_POS;
 	VDISP_END_POS_DBG <= VDISP_END_POS;
 	VDE_END_POS_DBG <= VDE_END_POS;
-	
+
+	-- savestates
+	gSS_R: for i in 0 to 4 generate
+		SS_RB(i) <= REGS(i*4+3) & REGS(i*4+2) & REGS(i*4+1) & REGS(i*4);
+		iREG : entity work.eReg_SavestateV generic map (SS_BASE + i, (others => '0'))
+		port map (CLK, SS_BUS_Din, SS_BUS_Adr, SS_BUS_wren, SS_BUS_rst, SS_DO(i), SS_RB(i), SS_R(i));
+	end generate;
+
+	SS_IB(0) <= "000" & VDISP_OLD & BYRH_SET & BYRL_SET & BXR_SET & IO_BYRH_WR & IO_BYRL_WR & IO_BYRH_SET & IO_BYRL_SET &
+	            CPU_VRAM_ADDR & CPU_BUSY_CLEAR & CPU_BUSY & CPUWR_EXEC & CPURD_EXEC & CPUWR_PEND2 & CPURD_PEND2 & CPUWR_PEND & CPURD_PEND &
+	            RD_N_OLD & SR_LATCH & VRR & AR;
+	SS_IB(1) <= "0000000000000" & IRQ_COL & IRQ_OVF & IRQ_VBL & IRQ_DMAS & IRQ_RCR & IRQ_DMA & DMAS_SAT_ADDR & DMA_BUF &
+	            DMAS_EXEC & DMAS_PEND & DMA_EXEC & DMA_WR & DMA_PEND & CPU_VRAM_DATA;
+	SS_IB(2) <= "000000" & RES7M & CM & HDE & HDW & HDS & HSW & TILE_ZERO & std_logic_vector(DOTS_REMAIN) &
+	            std_logic_vector(TILE_CNT) & std_logic_vector(DOT_CNT) & DMAS_VRAM_ADDR;
+	SS_IB(3) <= "0" & SCREEN & SM & VM & VDE & VDW & VDS & VSW & SS_RC_UPD & std_logic_vector(RC_CNT) & BURST & VDISP &
+	            DISP_BREAK_LATCH & DISP_BREAK_EN & DISP_CNT_INC & std_logic_vector(DISP_CNT);
+	SS_IB(4) <= (63 downto 31 => '0') & std_logic_vector(BG_X) & std_logic_vector(OFS_Y) & std_logic_vector(OFS_X) & SB & BB;
+
+	gSS_I: for i in 0 to 4 generate
+		iREG : entity work.eReg_SavestateV generic map (SS_BASE + 5 + i, (others => '0'))
+		port map (CLK, SS_BUS_Din, SS_BUS_Adr, SS_BUS_wren, SS_BUS_rst, SS_DO(5 + i), SS_IB(i), SS_I(i));
+	end generate;
+
+	process(SS_DO)
+		variable v : std_logic_vector(63 downto 0);
+	begin
+		v := (others => '0');
+		for i in 0 to 9 loop
+			v := v or SS_DO(i);
+		end loop;
+		SS_BUS_Dout <= v;
+	end process;
+
+	SS_IDLE <= not VDISP and not BG_FETCH and not BG_OUT and not SPR_EVAL and not SPR_FETCH and not SPR_LINE_CLR and not SPR_TILE_SAVE;
+
 end rtl;

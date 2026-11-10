@@ -3,6 +3,8 @@ use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.STD_LOGIC_UNSIGNED.ALL;
 use IEEE.NUMERIC_STD.ALL;
 use IEEE.STD_LOGIC_TEXTIO.all;
+library work;
+use work.pBus_savestates.all;
 
 entity pce_top is
 	generic (
@@ -88,7 +90,24 @@ entity pce_top is
 		VIDEO_VS		: out std_logic;
 		VIDEO_HS		: out std_logic;
 		VIDEO_HBL	: out std_logic;
-		VIDEO_VBL	: out std_logic
+		VIDEO_VBL	: out std_logic;
+
+		-- savestates
+		SS_FREEZE_REQ: in  std_logic := '0';
+		SS_PAUSED	: out std_logic;
+		SS_RESTORE	: in  std_logic := '0';
+		SS_REFETCH	: in  std_logic := '0';
+		SS_BUS_Din	: in  std_logic_vector(BUS_buswidth-1 downto 0) := (others => '0');
+		SS_BUS_Adr	: in  std_logic_vector(BUS_busadr-1 downto 0) := (others => '1');
+		SS_BUS_wren	: in  std_logic := '0';
+		SS_BUS_rst	: in  std_logic := '0';
+		SS_BUS_Dout	: out std_logic_vector(BUS_buswidth-1 downto 0);
+		SS_MEM_ACT	: in  std_logic := '0';
+		SS_MEM_TYPE	: in  std_logic_vector(2 downto 0) := (others => '0');
+		SS_MEM_ADDR	: in  std_logic_vector(16 downto 0) := (others => '0');
+		SS_MEM_WE	: in  std_logic := '0';
+		SS_MEM_WD	: in  std_logic_vector(7 downto 0) := (others => '0');
+		SS_MEM_RD	: out std_logic_vector(7 downto 0)
 	);
 end pce_top;
 
@@ -210,6 +229,36 @@ signal AC_RAM_CS_N: std_logic;
 signal AC_RAM_A   : std_logic_vector(20 downto 0);
 signal AC_DO      : std_logic_vector(7 downto 0);
 
+-- savestates
+signal FREEZE		: std_logic;
+signal FREEZE_R	: std_logic := '0';
+signal CPU_SS_IDLE, VCE_SS_IDLE, VDC0_SS_IDLE : std_logic;
+signal SS_CPU_DO, SS_VDC_DO, SS_VCE_DO, SS_TOP_DO : std_logic_vector(63 downto 0);
+signal SS_TOP_IN, SS_TOP_OUT : std_logic_vector(63 downto 0);
+signal SS_SEL_RAM, SS_SEL_VRAM, SS_SEL_SAT, SS_SEL_PAL, SS_SEL_WAVE, SS_SEL_PRAM : std_logic;
+signal SS_LO		: std_logic_vector(7 downto 0);
+signal SS_WD16		: std_logic_vector(15 downto 0);
+signal SS_WE_HI	: std_logic;
+signal SS_SAT_Q	: std_logic_vector(15 downto 0);
+signal SS_PAL_Q	: std_logic_vector(8 downto 0);
+signal SS_WAVE_Q	: std_logic_vector(4 downto 0);
+signal SS_VRAM_Q	: std_logic_vector(15 downto 0);
+signal SS_RAM_Q	: std_logic_vector(7 downto 0);
+signal SS_PRAM_Q	: std_logic_vector(7 downto 0);
+signal SS_W16		: std_logic_vector(15 downto 0);
+signal VRAM0_AB	: std_logic_vector(14 downto 0);
+signal VRAM0_DB	: std_logic_vector(15 downto 0);
+signal VRAM0_WB	: std_logic;
+signal RAM_AB		: std_logic_vector(14 downto 0);
+signal RAM_DB		: std_logic_vector(7 downto 0);
+signal RAM_WB		: std_logic;
+signal PRAM_AB		: std_logic_vector(14 downto 0);
+signal PRAM_DB		: std_logic_vector(7 downto 0);
+signal PRAM_WB		: std_logic;
+signal SS_WAVE_WE	: std_logic;
+signal SS_PAL_WE	: std_logic;
+signal SS_SAT_WE	: std_logic;
+
 component ARCADE_CARD is
 	port(
 		CLK     : in  std_logic;
@@ -296,7 +345,20 @@ port map(
 	VDCNUM   => VDCNUM,
 
 	AUD_LDATA=> PCE_SL,
-	AUD_RDATA=> PCE_SR
+	AUD_RDATA=> PCE_SR,
+
+	FREEZE      => FREEZE,
+	SS_IDLE     => CPU_SS_IDLE,
+	SS_RESTORE  => SS_RESTORE,
+	SS_BUS_Din  => SS_BUS_Din,
+	SS_BUS_Adr  => SS_BUS_Adr,
+	SS_BUS_wren => SS_BUS_wren,
+	SS_BUS_rst  => SS_BUS_rst,
+	SS_BUS_Dout => SS_CPU_DO,
+	SS_WAVE_A   => SS_MEM_ADDR(7 downto 0),
+	SS_WAVE_D   => SS_MEM_WD(4 downto 0),
+	SS_WAVE_WE  => SS_WAVE_WE,
+	SS_WAVE_Q   => SS_WAVE_Q
 );
 
 JOY_OUT <= CPU_IO_DO(1 downto 0);
@@ -344,7 +406,21 @@ port map(
 	VS_N		=> VS_N,
 	HS_N		=> HS_N,
 	HBL		=> VIDEO_HBL,
-	VBL		=> VIDEO_VBL
+	VBL		=> VIDEO_VBL,
+
+	FREEZE      => FREEZE,
+	SS_IDLE     => VCE_SS_IDLE,
+	SS_RESTORE  => SS_RESTORE,
+	SS_BUS_Din  => SS_BUS_Din,
+	SS_BUS_Adr  => SS_BUS_Adr,
+	SS_BUS_wren => SS_BUS_wren,
+	SS_BUS_rst  => SS_BUS_rst,
+	SS_BUS_Dout => SS_VCE_DO,
+	SS_PAL_SEL  => SS_SEL_PAL,
+	SS_PAL_A    => SS_MEM_ADDR(9 downto 1),
+	SS_PAL_D    => SS_WD16(8 downto 0),
+	SS_PAL_WE   => SS_PAL_WE,
+	SS_PAL_Q    => SS_PAL_Q
 );
 
 VDC0 : entity work.HUC6270
@@ -384,7 +460,21 @@ port map(
 	RAM_WE	=> VRAM0_WE,
 	
 	BG_EN		=> BG_EN,
-	SPR_EN	=> SPR_EN
+	SPR_EN	=> SPR_EN,
+
+	FREEZE      => FREEZE,
+	SS_IDLE     => VDC0_SS_IDLE,
+	SS_RESTORE  => SS_RESTORE,
+	SS_BUS_Din  => SS_BUS_Din,
+	SS_BUS_Adr  => SS_BUS_Adr,
+	SS_BUS_wren => SS_BUS_wren,
+	SS_BUS_rst  => SS_BUS_rst,
+	SS_BUS_Dout => SS_VDC_DO,
+	SS_SAT_SEL  => SS_SEL_SAT,
+	SS_SAT_A    => SS_MEM_ADDR(8 downto 1),
+	SS_SAT_D    => SS_WD16,
+	SS_SAT_WE   => SS_SAT_WE,
+	SS_SAT_Q    => SS_SAT_Q
 );
 
 VRAM0 : entity work.dpram generic map (addr_width => 15, data_width => 16, disable_value => '0')
@@ -396,10 +486,15 @@ port map (
 	wren_a	=> VRAM0_WE,
 	q_a		=> VRAM0_DI,
 
-	address_b=> CLR_A,
-	data_b	=> (others => '0'),
-	wren_b	=> CLR_WE
+	address_b=> VRAM0_AB,
+	data_b	=> VRAM0_DB,
+	wren_b	=> VRAM0_WB,
+	q_b		=> SS_VRAM_Q
 );
+
+VRAM0_AB <= SS_MEM_ADDR(15 downto 1) when SS_SEL_VRAM = '1' else CLR_A;
+VRAM0_DB <= SS_WD16                  when SS_SEL_VRAM = '1' else (others => '0');
+VRAM0_WB <= SS_WE_HI                 when SS_SEL_VRAM = '1' else CLR_WE;
 
 CLR_A  <= CLR_A + 1  when rising_edge(CLK);
 CLR_WE <= COLD_RESET when rising_edge(CLK);
@@ -442,7 +537,9 @@ generate_SGX: if (LITE = 0) generate begin
 		RAM_WE	=> VRAM1_WE,
 
 		BG_EN		=> BG_EN,
-		SPR_EN	=> SPR_EN
+		SPR_EN	=> SPR_EN,
+
+		FREEZE   => FREEZE
 	);
 
 	VRAM1 : entity work.dpram generic map (addr_width => 15, data_width => 16, disable_value => '0')
@@ -581,7 +678,7 @@ ROM_A <=   "00000"&CPU_A(16 downto 0)                                       when
       else "00"&CPU_A(19 downto 0);                                                             -- 1MB and others
 
 ROM_RD    <= CPU_PRE_RD and not CPU_ROM_SEL_N and CPU_PRAM_SEL_N and ((AC_RAM_CS_N and CD_RAM_CS_N) or not CD_EN);
-ROM_CLKEN <= CPU_CLKEN;
+ROM_CLKEN <= CPU_CLKEN or SS_REFETCH;
 
 process( CLK ) begin
 	if rising_edge( CLK ) then
@@ -592,6 +689,9 @@ process( CLK ) begin
 			if CPU_A(20) = '0' and ('0' & CPU_A(12 downto 2)) = X"7FC" and CPU_WR_N = '0' then
 				rombank <= CPU_A(1 downto 0);
 			end if;
+		end if;
+		if SS_RESTORE = '1' then
+			rombank <= SS_TOP_IN(1 downto 0);
 		end if;
 		RESET_N <= not RESET;
 	end if;
@@ -605,10 +705,15 @@ port map (
 	wren_a	=> CPU_CE and not CPU_PRAM_SEL_N and not CPU_WR_N,
 	q_a		=> PRAM_DO,
 
-	address_b=> CLR_A,
-	data_b	=> (others => '0'),
-	wren_b	=> CLR_WE
+	address_b=> PRAM_AB,
+	data_b	=> PRAM_DB,
+	wren_b	=> PRAM_WB,
+	q_b		=> SS_PRAM_Q
 );
+
+PRAM_AB <= SS_MEM_ADDR(14 downto 0) when SS_SEL_PRAM = '1' else CLR_A;
+PRAM_DB <= SS_MEM_WD                when SS_SEL_PRAM = '1' else (others => '0');
+PRAM_WB <= SS_MEM_WE                when SS_SEL_PRAM = '1' else CLR_WE;
 
 CPU_PRAM_SEL_N <= CPU_A(20) or not CPU_A(19) or not ROM_POP;
 
@@ -621,10 +726,15 @@ port map (
 	wren_a	=> CPU_CE and not CPU_RAM_SEL_N and not CPU_WR_N,
 	q_a		=> RAM_DO,
 
-	address_b=> CLR_A,
-	data_b	=> (others => '0'),
-	wren_b	=> CLR_WE
+	address_b=> RAM_AB,
+	data_b	=> RAM_DB,
+	wren_b	=> RAM_WB,
+	q_b		=> SS_RAM_Q
 );
+
+RAM_AB <= SS_MEM_ADDR(14 downto 0) when SS_SEL_RAM = '1' else CLR_A;
+RAM_DB <= SS_MEM_WD                when SS_SEL_RAM = '1' else (others => '0');
+RAM_WB <= SS_MEM_WE                when SS_SEL_RAM = '1' else CLR_WE;
 
 RAM_A(12 downto 0)  <= CPU_A(12 downto 0);
 RAM_A(14 downto 13) <= CPU_A(14 downto 13) when SGX = '1' else "00";
@@ -703,5 +813,56 @@ port map(
 
 PSG_SR <= signed(PCE_SR(23 downto 8));
 PSG_SL <= signed(PCE_SL(23 downto 8));
+
+-- savestates
+FREEZE <= FREEZE_R or (SS_FREEZE_REQ and CPU_SS_IDLE and VCE_SS_IDLE and VDC0_SS_IDLE);
+
+process( CLK ) begin
+	if rising_edge( CLK ) then
+		FREEZE_R <= SS_FREEZE_REQ and FREEZE;
+	end if;
+end process;
+
+SS_PAUSED <= FREEZE_R;
+
+SS_TOP_OUT <= (63 downto 2 => '0') & rombank;
+
+iREG_TOP : entity work.eReg_SavestateV generic map (6, (others => '0'))
+port map (CLK, SS_BUS_Din, SS_BUS_Adr, SS_BUS_wren, SS_BUS_rst, SS_TOP_DO, SS_TOP_OUT, SS_TOP_IN);
+
+SS_BUS_Dout <= SS_CPU_DO or SS_VDC_DO or SS_VCE_DO or SS_TOP_DO;
+
+-- memories, in the order of the savestate table
+SS_SEL_RAM  <= SS_MEM_ACT when SS_MEM_TYPE = "000" else '0';
+SS_SEL_VRAM <= SS_MEM_ACT when SS_MEM_TYPE = "001" else '0';
+SS_SEL_SAT  <= SS_MEM_ACT when SS_MEM_TYPE = "010" else '0';
+SS_SEL_PAL  <= SS_MEM_ACT when SS_MEM_TYPE = "011" else '0';
+SS_SEL_WAVE <= SS_MEM_ACT when SS_MEM_TYPE = "100" else '0';
+SS_SEL_PRAM <= SS_MEM_ACT when SS_MEM_TYPE = "101" else '0';
+
+-- 16-bit memories: the low byte is held until the high byte arrives
+process( CLK ) begin
+	if rising_edge( CLK ) then
+		if SS_MEM_WE = '1' and SS_MEM_ADDR(0) = '0' then
+			SS_LO <= SS_MEM_WD;
+		end if;
+	end if;
+end process;
+
+SS_WD16    <= SS_MEM_WD & SS_LO;
+SS_WE_HI   <= SS_MEM_WE and SS_MEM_ADDR(0);
+SS_SAT_WE  <= SS_WE_HI;
+SS_PAL_WE  <= SS_WE_HI;
+SS_WAVE_WE <= SS_MEM_WE and SS_SEL_WAVE;
+
+SS_W16 <= SS_VRAM_Q              when SS_MEM_TYPE = "001" else
+          SS_SAT_Q               when SS_MEM_TYPE = "010" else
+          "0000000" & SS_PAL_Q;
+
+SS_MEM_RD <= SS_RAM_Q               when SS_MEM_TYPE = "000" else
+             SS_PRAM_Q              when SS_MEM_TYPE = "101" else
+             "000" & SS_WAVE_Q      when SS_MEM_TYPE = "100" else
+             SS_W16(15 downto 8)    when SS_MEM_ADDR(0) = '1' else
+             SS_W16(7 downto 0);
 
 end rtl;

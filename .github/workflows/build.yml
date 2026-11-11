@@ -197,6 +197,7 @@ jobs:
           name: TurboGrafx16_SS_sd
           path: sd/
           include-hidden-files: true
+          overwrite: true   # a re-run of the failed seeds runs the pick again
 
       - name: Status
         env:

@@ -23,7 +23,7 @@ echo "Upstream:"; echo "${upstream:-- none}"
 echo "Savestate branch:"; echo "${ours:-- none}"
 
 # files the savestate patch changes, and those of them changed since the previous release
-patch=$(git diff --name-only "$base" HEAD -- rtl '*.sv' '*.v' '*.vhd' | sort)
+patch=$(git diff --name-only "$base" HEAD -- rtl '*.sv' '*.v' '*.vhd' ':!sim' ':!savestate' ':!.github' | sort)
 touched=$(git diff --name-only "$prev" HEAD | sort)
 risky=$(comm -12 <(echo "$patch") <(echo "$touched"))
 if [ -n "$risky" ]; then

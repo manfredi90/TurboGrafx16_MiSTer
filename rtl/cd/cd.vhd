@@ -224,7 +224,7 @@ architecture rtl of cd is
 	signal ADPCM_FADE_VOL	: unsigned(10 downto 0);
 
 	-- savestates: 64..68 here, 69 the MSM5205, 70..73 the SCSI controller
-	type ss_regs_t is array(0 to 9) of std_logic_vector(63 downto 0);
+	type ss_regs_t is array(0 to 10) of std_logic_vector(63 downto 0);
 	signal SS_IN, SS_OUT, SS_DO : ss_regs_t;
 	signal SCSI_SS_IN, SCSI_SS_OUT : std_logic_vector(255 downto 0);
 	signal ADRAM_WE_A    : std_logic;
@@ -866,7 +866,10 @@ begin
 		IN_CLK   	=> 429545,
 		OUT_CLK   	=> 441,
 		CE   			=> CDDA_CE,
-		FREEZE      => FREEZE
+		FREEZE      => FREEZE,
+		SS_RESTORE  => SS_RESTORE,
+		SS_IN       => SS_IN(10)(63 downto 32),
+		SS_OUT      => SS_OUT(10)(63 downto 32)
 	);
 
 	ADPCM_CLK_GEN : entity work.CEGen
@@ -876,7 +879,10 @@ begin
 		IN_CLK      => 42954545,
 		OUT_CLK     => 1540200,
 		CE          => ADPCM_CE,
-		FREEZE      => FREEZE
+		FREEZE      => FREEZE,
+		SS_RESTORE  => SS_RESTORE,
+		SS_IN       => SS_IN(10)(31 downto 0),
+		SS_OUT      => SS_OUT(10)(31 downto 0)
 	);
 	
 	--CD SUBCODE
@@ -1053,7 +1059,7 @@ begin
 	SS_OUT(9) <= SCSI_SS_OUT(255 downto 192);
 	SCSI_SS_IN <= SS_IN(9) & SS_IN(8) & SS_IN(7) & SS_IN(6);
 
-	gSS: for i in 0 to 9 generate
+	gSS: for i in 0 to 10 generate
 		iREG : entity work.eReg_SavestateV generic map (64 + i, (others => '0'))
 		port map (CLK, SS_BUS_Din, SS_BUS_Adr, SS_BUS_wren, SS_BUS_rst, SS_DO(i), SS_OUT(i), SS_IN(i));
 	end generate;
@@ -1062,7 +1068,7 @@ begin
 		variable v : std_logic_vector(63 downto 0);
 	begin
 		v := (others => '0');
-		for i in 0 to 9 loop
+		for i in 0 to 10 loop
 			v := v or SS_DO(i);
 		end loop;
 		SS_BUS_Dout <= v;

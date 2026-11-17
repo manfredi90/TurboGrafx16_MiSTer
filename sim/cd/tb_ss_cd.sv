@@ -34,7 +34,7 @@ endmodule
 
 module tb;
 
-localparam GAP    = 20000;
+localparam GAP    = 30000;
 localparam TICK   = 10000;      // Main's 13.33 ms
 localparam REFILL = 2000000;
 localparam [31:0] SIZE_CD = 148800;
@@ -47,7 +47,8 @@ integer errors = 0;
 `define CHECK(c, msg) if (!(c)) begin errors = errors + 1; $display("ERROR %0t: %s", $time, msg); end
 
 reg         reset = 0;
-reg         cd_mode = 1, ac_mode = 0, core_ddr = 0;
+reg         cd_mode = 1, ac_mode = 0;
+reg         scsi_reset = 0;
 reg         save = 0, load = 0;
 reg   [1:0] slot = 0;
 wire        busy, info_req;
@@ -108,14 +109,14 @@ assign core_run = ~freeze_req & ~paused;
 
 ss_cd #(.GAP(GAP), .REFILL(REFILL)) dut
 (
-	.clk(clk), .reset(reset), .cd_mode(cd_mode), .ac_mode(ac_mode), .core_ddr(core_ddr),
+	.clk(clk), .reset(reset), .cd_mode(cd_mode), .ac_mode(ac_mode),
 	.save(save), .load(load), .slot(slot), .busy(busy), .info_req(info_req), .info(info),
 	.eng_save(eng_save), .eng_load(eng_load), .eng_busy(eng_busy), .eng_load_done(eng_load_done), .eng_restore(eng_restore),
 	.hold(hold), .paused(paused), .core_run(core_run), .fifo_clr(fifo_clr),
 	.bus_din(bus_din), .bus_adr(bus_adr), .bus_wren(bus_wren), .bus_rst(bus_rst), .bus_dout(bus_dout),
 	.comm(comm), .comm_ev(comm_ev), .dataout_ev(dataout_ev), .reset_ev(reset_ev), .block_out(block_out), .inj_req(inj_req), .inj_data(inj_data),
 	.stat_ev(stat_ev), .stat_in(stat_in), .dout_ev(dout_ev), .stat_get(stat_get), .stat_out(stat_out), .dout_req(dout_req),
-	.pkt_hdr(pkt_hdr), .pkt_ch(pkt_ch), .pkt_len(pkt_len), .byte_wr(byte_wr), .byte_idx(byte_idx), .byte_val(byte_val), .drop(drop), .scsi_rd(scsi_rd),
+	.pkt_hdr(pkt_hdr), .pkt_ch(pkt_ch), .pkt_len(pkt_len), .byte_wr(byte_wr), .byte_idx(byte_idx), .byte_val(byte_val), .drop(drop), .scsi_rd(scsi_rd), .scsi_reset(scsi_reset),
 	.ddr_owner(ddr_owner), .ddr_adr(ddr_adr), .ddr_din(ddr_din), .ddr_rnw(ddr_rnw), .ddr_req(ddr_req), .ddr_done(ddr_done), .ddr_dout(ddr_dout),
 	.mounting(mounting), .img_size(img_size), .hps_wr(hps_wr), .hps_lba(hps_lba), .hps_blks(hps_blks),
 	.bk_force(bk_force), .bk_busy(bk_busy),
@@ -243,10 +244,11 @@ typedef struct { int got_n; int stats; bit in_data; } core_state_t;
 
 // messages of the core to Main
 reg [111:0] msgq[$];
+bit         msginj[$];   // the message comes from ss_cd
 always @(posedge clk) begin
 	scsi_rd <= 0;
 	if (byte_wr && pkt_ch == 1 && !drop) fifo.push_back(byte_val);
-	if (fifo_clr) fifo.delete();
+	if (fifo_clr || scsi_reset) fifo.delete();
 	if (stat_get) stats++;
 	if (core_run) begin
 		rd_div++;
@@ -260,7 +262,7 @@ always @(posedge clk) begin
 			else if (in_data) begin
 				// CD_DATA_END
 				in_data = 0;
-				if (!block_out) msgq.push_back({16'h0002, 96'd0});
+				if (!block_out) begin msgq.push_back({16'h0002, 96'd0}); msginj.push_back(0); end
 			end
 		end
 	end
@@ -273,6 +275,7 @@ task automatic core_cmd(input [95:0] c);
 	comm <= c;
 	comm_ev <= 1;
 	msgq.push_back({16'h8000, c});
+	msginj.push_back(0);
 	@(posedge clk);
 	comm_ev <= 0;
 endtask
@@ -292,7 +295,7 @@ function automatic byte unsigned sector_byte(int lba, int i);
 	return byte'((lba * 7 + i * 13 + (i >> 8)) & 255);
 endfunction
 
-always @(posedge clk) if (inj_req) msgq.push_back(inj_data);
+always @(posedge clk) if (inj_req) begin msgq.push_back(inj_data); msginj.push_back(1); end
 
 task automatic send_pkt(input [1:0] ch, input int len, input int lba, input bit subq);
 	pkt_hdr <= 1;
@@ -327,11 +330,11 @@ task automatic send_stat();
 	stat_ev <= 0;
 endtask
 
-task automatic m_exec(input [111:0] msg);
+task automatic m_exec(input [111:0] msg, input bit inj);
 	reg [7:0] code = msg[103:96];
 	reg [95:0] c = msg[95:0];
 	bit fast = msg[111];
-	if ($time - last_msg_time < 4000) begin
+	if (inj && $time - last_msg_time < 4000) begin
 		errors++;
 		$display("ERROR %0t: two messages to Main too close, one would be lost", $time);
 	end
@@ -361,7 +364,7 @@ task automatic m_exec(input [111:0] msg);
 			m_has_stat = 1;
 		end
 		8'hD9: begin
-			m_end = {c[31:24], c[39:32], c[47:40]};
+			m_end = (c[79:72] == 8'h80) ? 400000 : {c[31:24], c[39:32], c[47:40]};
 			m_mode = c[15:8];
 			m_state = m_mode ? ST_PLAY : ST_IDLE;
 			if (m_mode == 2) m_int = 1;
@@ -378,13 +381,19 @@ initial begin
 	forever begin
 		@(posedge clk);
 		t++;
-		if (msgq.size()) m_exec(msgq.pop_front());
+		if (msgq.size()) m_exec(msgq.pop_front(), msginj.pop_front());
 		if (t >= TICK) begin
 			t = 0;
 			if (m_has_stat && !m_latency) begin send_stat(); m_has_stat = 0; end
 			case (m_state)
 				ST_READ: begin
 					if (m_latency) m_latency--;
+					else if (m_lba < 64) begin
+						// audio track: nothing is sent
+						m_cnt--;
+						m_lba++;
+						if (!m_cnt) begin m_has_stat = 1; m_state = ST_IDLE; end
+					end
 					else if (m_can_read) begin
 						m_can_read = 0;
 						send_pkt(1, 2048, m_lba, 0);
@@ -674,6 +683,58 @@ initial begin
 	void'(check_read(522, 2, "7 after load"));
 	`CHECK(stats == 1, "status 7 count")
 	rd_rate = 6;
+
+	//------------------------------------------------------------------ 8
+	$display("--- 8: SCSI reset with bytes in the FIFO, then save and load");
+	got.delete(); stats = 0;
+	rd_rate = 30;
+	core_cmd({56'd0, 8'd3, 8'd0, 8'd3, 8'd0, 8'h08});   // lba 0x300, 3 sectors
+	wait (got.size() >= 500);
+	// the game aborts the read
+	@(posedge clk);
+	scsi_reset <= 1;
+	reset_ev <= 1;
+	msgq.push_back({16'h00FF, 96'd0});
+	msginj.push_back(0);
+	@(posedge clk);
+	reset_ev <= 0;
+	run(100);
+	scsi_reset <= 0;
+	rd_rate = 6;
+	run(3 * TICK);
+	g = got.size();
+	`CHECK(dut.fifo_cnt == 0, "8: FIFO count after the SCSI reset")
+	do_save(2);
+	do_load(2);
+	run(4 * TICK);
+	`CHECK(got.size() == g, "8: bytes after the load")
+	core_cmd({56'd0, 8'd1, 8'd20, 8'd3, 8'd0, 8'h08});  // a new read, lba 0x314
+	wait (stats == 1);
+	run(2 * TICK);
+	for (int i = 0; i < 2048; i++) if (got[g + i] != sector_byte(32'h314, i)) begin errors++; $display("ERROR 8: new read wrong at %0d", i); break; end
+
+	//------------------------------------------------------------------ 9
+	$display("--- 9: CD audio in a loop");
+	got.delete(); stats = 0;
+	core_cmd({48'd0, 8'd5, 8'd0, 8'd0, 8'd0, 8'h00, 8'hD8}); // SAPSP lba 5, silent
+	wait (stats == 1);
+	core_cmd({48'd0, 8'd40, 8'd0, 8'd0, 8'd0, 8'h01, 8'hD9}); // SAPEP lba 40, loop
+	wait (stats == 2);
+	run(50 * TICK);   // 5..40, then again from 5
+	$display("9: sub %0d", dut.sub_lba);
+	g = dut.sub_lba;
+	do_save(0);
+	run(10 * TICK);
+	inj_cmds.delete();
+	do_load(0);
+	foreach (inj_cmds[i]) $display("9: command %h", inj_cmds[i]);
+	`CHECK(inj_cmds.size() == 3, "9: three commands")
+	`CHECK(m_start == 5, "9: loop start")
+	$display("9: Main at %0d, state %0d", m_lba, m_state);
+	`CHECK(m_state == ST_PLAY && m_lba >= g && m_lba <= g + 8, "9: position")
+	run(40 * TICK);
+	`CHECK(m_state == ST_PLAY && m_lba >= 5 && m_lba <= 41, "9: still in the loop")
+	`CHECK(stats == 2, "9: no status")
 
 	//------------------------------------------------------------------ 6
 	$display("--- 6: empty slot, state kept");

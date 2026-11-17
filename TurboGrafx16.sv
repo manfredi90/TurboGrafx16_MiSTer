@@ -808,7 +808,7 @@ ddram ddram
 	.DDRAM_DIN(core_DDRAM_DIN),
 	.DDRAM_BE(core_DDRAM_BE),
 	.DDRAM_WE(core_DDRAM_WE),
-	.clkref(ss_ext ? ss_ext_ce : ce_rom),
+	.clkref(ss_ref_mode ? ss_ext_ref : ce_rom),
 
 	.wraddr(cart_download ? romwr_a : {3'b001,cd_ram_a}),
 	.din(cart_download ? romwr_d : ss_ext ? {ss_mem_wd,ss_mem_wd} : {cd_ram_do,cd_ram_do}),
@@ -829,7 +829,7 @@ sdram sdram
 
 	.init(~pll_locked),
 	.clk(clk_ram),
-	.clkref(ss_ext ? ss_ext_ce : ce_rom),
+	.clkref(ss_ref_mode ? ss_ext_ref : ce_rom),
 
 	.waddr(cart_download ? romwr_a : ss_ext ? {3'b001,ss_ext_a} : {3'b001,cd_ram_a}),
 	.din(cart_download ? romwr_d : ss_ext ? {ss_mem_wd,ss_mem_wd} : {cd_ram_do,cd_ram_do}),
@@ -1332,7 +1332,7 @@ wire        ss_ddr_rnw, ss_ddr_req, ss_ddr_done;
 reg         ss_req_save = 0, ss_req_load = 0;
 reg         ss_pend_save = 0, ss_pend_load = 0;
 reg  [7:0]  ss_hold = 0;
-reg         ss_refetch = 0;
+reg         ss_refetch = 0, ss_refetch_pend = 0;
 reg  [1:0]  ss_req_slot;
 
 wire        cd_busy, cd_hold, cd_eng_save, cd_eng_load;
@@ -1368,7 +1368,11 @@ always @(posedge clk_sys) begin
 	// with a CD also after a save, as the RAM of the CD shares that port
 	if (cd_en ? (cd_fz_old & ~cd_fz) : ss_load_done) ss_hold <= 8'd200;
 	else if (ss_hold) ss_hold <= ss_hold - 1'd1;
-	if (ss_hold == 8'd150) ss_refetch <= 1;
+	if (ss_hold == 8'd150) ss_refetch_pend <= 1;
+	if (ss_refetch_pend && ss_hold < 8'd148 && ss_ref_next) begin
+		ss_refetch      <= 1;
+		ss_refetch_pend <= 0;
+	end
 end
 
 wire ss_freeze_req = ss_sleep | (ss_hold != 0) | cd_hold | (cd_en & cd_fz_old);
@@ -1424,20 +1428,38 @@ assign ss_bus_dout = ss_core_dout | ss_input_dout | ss_id_dout | ss_cd_dout;
 wire ss_bram = (ss_saving | ss_loading) && (ss_mem_type == 4'd8);
 wire ss_ext  = (ss_saving | ss_loading) && (ss_mem_type == 4'd10 || ss_mem_type == 4'd11);
 
-// CD RAM and Arcade Card RAM are reached through the port of the ROM, in SDRAM or DDR3
+// CD RAM and Arcade Card RAM are reached through the port of the ROM, in SDRAM or DDR3.
+// The SDRAM controller refreshes when its cycle starts with no request, and a cycle started
+// by clkref right after that would come too soon: it is given a regular clkref, as the CPU
+// gives it, and a request goes with one of these pulses, not the first.
 wire [21:0] ss_ext_a = (ss_mem_type == 4'd10) ? {4'b1000, ss_mem_addr[17:0]} : {1'b0, ss_mem_addr[20:0]};
 reg         ss_ext_ce = 0, ss_ext_we = 0, ss_ext_wait = 0;
 reg   [7:0] ss_ext_q;
 wire        ss_ddr_pending;
 
+// every 8 clocks (16 of the SDRAM); also while the core is held after a savestate,
+// for the read done again then
+reg   [2:0] ss_ref_div = 0;
+reg         ss_ext_ref = 0;
+wire        ss_ref_next = &ss_ref_div;
+wire        ss_ref_mode = ss_ext | (ss_hold != 0);
+always @(posedge clk_sys) begin
+	ss_ref_div <= ss_ref_div + 1'd1;
+	ss_ext_ref <= ss_ref_next;
+end
+
 always @(posedge clk_sys) begin
 	reg       old_rd, old_we;
 	reg [1:0] st = 0;
 	reg [3:0] cnt;
+	reg       ref_ok = 0;
 
 	old_rd <= ss_mem_rden;
 	old_we <= ss_mem_we;
 	ss_ext_ce <= 0;
+
+	if (ss_ext_ref) ref_ok <= ss_ext;
+	if (!ss_ext) ref_ok <= 0;
 
 	case (st)
 		0: if (ss_ext && ((ss_mem_rden & ~old_rd) || (ss_mem_we & ~old_we))) begin
@@ -1446,7 +1468,7 @@ always @(posedge clk_sys) begin
 				st <= 1;
 			end
 		// a DDR3 access of the engine goes first
-		1: if (!ss_ddr_pending) begin
+		1: if (!ss_ddr_pending && ref_ok && ss_ref_next) begin
 				ss_ext_ce <= 1;
 				cnt <= 0;
 				st  <= 2;

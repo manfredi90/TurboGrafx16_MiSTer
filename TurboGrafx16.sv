@@ -159,7 +159,11 @@ parameter CONF_STR = {
 	"Save to state 3,",
 	"Restore state 3,",
 	"Save to state 4,",
-	"Restore state 4;",
+	"Restore state 4,",
+	"State saved,",
+	"State loaded,",
+	"Empty slot,",
+	"Savestate failed;",
 	"V,v",`BUILD_DATE
 };
 
@@ -221,7 +225,7 @@ reg  [31:0] sd_lba;
 reg         sd_rd = 0;
 reg         sd_wr = 0;
 wire        sd_ack;
-wire  [7:0] sd_buff_addr;
+wire [12:0] sd_buff_addr;
 wire [15:0] sd_buff_dout;
 wire [15:0] sd_buff_din;
 wire        sd_buff_wr;
@@ -246,8 +250,8 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 	.status_menumask({ss_allow, en216p, snac, 1'd1, use_sdr, ~use_sdr, ~gg_avail,~bk_ena}),
 	.status_in({status[127:42], ss_slot, status[39:0]}),
 	.status_set(ss_status_update),
-	.info_req(ss_info_req),
-	.info(ss_info),
+	.info_req(ss_info_req | cd_info_req),
+	.info(cd_info_req ? cd_info : ss_info),
 	.forced_scandoubler(forced_scandoubler),
 
 	.sdram_sz(sdram_sz),
@@ -262,13 +266,14 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 	.ioctl_dout(ioctl_dout),
 	.ioctl_wait(ioctl_wait),
 
-	.sd_lba('{sd_lba}),
-	.sd_rd(sd_rd),
-	.sd_wr(sd_wr),
+	.sd_lba('{hps_sd_lba}),
+	.sd_blk_cnt('{hps_sd_blk}),
+	.sd_rd(hps_sd_rd),
+	.sd_wr(hps_sd_wr),
 	.sd_ack(sd_ack),
 	.sd_buff_addr(sd_buff_addr),
 	.sd_buff_dout(sd_buff_dout),
-	.sd_buff_din('{sd_buff_din}),
+	.sd_buff_din('{cd_sd_act ? cd_buff_din : sd_buff_din}),
 	.sd_buff_wr(sd_buff_wr),
 	.img_mounted(img_mounted),
 	.img_readonly(img_readonly),
@@ -364,14 +369,14 @@ pce_top #(LITE) pce_top
 	.CD_RAM_RD(cd_ram_rd),
 	.CD_RAM_WR(cd_ram_wr),
 
-	.CD_STAT(cd_stat[7:0]),
-	.CD_MSG(cd_stat[15:8]),
-	.CD_STAT_GET(cd_stat_rec),
+	.CD_STAT(cd_stat_core[7:0]),
+	.CD_MSG(cd_stat_core[15:8]),
+	.CD_STAT_GET(cd_stat_get),
 
 	.CD_COMM(cd_comm),
 	.CD_COMM_SEND(cd_comm_send),
 
-	.CD_DOUT_REQ(cd_dataout_req),
+	.CD_DOUT_REQ(cd_dout_get),
 	.CD_DOUT(cd_dataout),
 	.CD_DOUT_SEND(cd_dataout_send),
 
@@ -379,9 +384,9 @@ pce_top #(LITE) pce_top
 	.CD_RESET(cd_reset_req),
 
 	.CD_DATA(!cd_dat_byte ? cd_dat[7:0] : cd_dat[15:8]),
-	.CD_DATA_WR(cd_data_wr),
-	.CD_AUDIO_WR(cd_audio_wr),
-	.CD_SUBCD_WR(cd_subcode_wr),
+	.CD_DATA_WR(cd_data_wr & ~cd_drop),
+	.CD_AUDIO_WR(cd_audio_wr & ~cd_drop),
+	.CD_SUBCD_WR(cd_subcode_wr & ~cd_drop),
 	.CD_DATA_END(cd_dat_req),
 	.CD_DM(cd_dm),
 
@@ -423,7 +428,9 @@ pce_top #(LITE) pce_top
 	.SS_MEM_ADDR(ss_mem_addr[16:0]),
 	.SS_MEM_WE(ss_mem_we),
 	.SS_MEM_WD(ss_mem_wd),
-	.SS_MEM_RD(ss_mem_rd)
+	.SS_MEM_RD(ss_core_rd),
+	.SS_FIFO_CLR(cd_fifo_clr),
+	.SCSI_FIFO_RD(scsi_fifo_rd)
 );
 
 
@@ -447,12 +454,16 @@ always @(posedge clk_sys) begin
 end
 
 reg         cd_dat_req;
+reg         cd_comm_ev, cd_dataout_ev, cd_reset_ev;
 always @(posedge clk_sys) begin
 	reg cd_out112_last = 1;
 	reg cd_comm_send_old = 0, cd_dataout_send_old = 0, cd_dat_req_old = 0, cd_reset_req_old = 0;
 
 	cd_stat_rec <= 0;
 	cd_dataout_req <= 0;
+	cd_comm_ev <= 0;
+	cd_dataout_ev <= 0;
+	cd_reset_ev <= 0;
 	if (reset || cart_download) begin
 		cd_region <= 0;
 	end
@@ -470,15 +481,24 @@ always @(posedge clk_sys) begin
 		cd_dataout_send_old <= cd_dataout_send;
 		cd_dat_req_old <= cd_dat_req;
 		cd_reset_req_old <= cd_reset_req;
-		if (cd_comm_send && !cd_comm_send_old) begin
+		// while a savestate is loaded the drive gets only the commands that put it back
+		if (cd_inj_req) begin
+			cd_in[111:0] <= cd_inj_data;
+			cd_in[112] <= ~cd_in[112];
+		end
+		else if (cd_block) begin
+		end
+		else if (cd_comm_send && !cd_comm_send_old) begin
 			cd_in[95:0] <= cd_comm;
 			cd_in[111:96] <= {status[1],15'd0};
 			cd_in[112] <= ~cd_in[112];
+			cd_comm_ev <= 1;
 		end
 		else if (cd_dataout_send && !cd_dataout_send_old) begin
 			cd_in[79:0] <= cd_dataout;
 			cd_in[111:96] <= 16'h0001;
 			cd_in[112] <= ~cd_in[112];
+			cd_dataout_ev <= 1;
 		end
 		else if (cd_dat_req && !cd_dat_req_old) begin
 			cd_in[111:96] <= 16'h0002;
@@ -487,6 +507,7 @@ always @(posedge clk_sys) begin
 		else if (cd_reset_req && !cd_reset_req_old) begin
 			cd_in[111:96] <= 16'h00FF;
 			cd_in[112] <= ~cd_in[112];
+			cd_reset_ev <= 1;
 		end
 	end
 end
@@ -495,10 +516,14 @@ reg [15:0] cd_dat;
 reg        cd_data_wr,cd_audio_wr,cd_subcode_wr;
 reg        cd_dat_byte;
 reg        cd_dm;
+reg [14:0] cd_dat_len, cd_dat_cnt;
+reg        cd_pkt_hdr;
+wire [1:0] cd_pkt_ch = cd_data_download ? 2'd1 : cd_audio_download ? 2'd2 : cd_subcode_download ? 2'd3 : 2'd0;
 always @(posedge clk_sys) begin
 	reg old_download;
 	reg head_pos, cd_dat_write;
-	reg [14:0] cd_dat_len, cd_dat_cnt;
+
+	cd_pkt_hdr <= 0;
 
 	old_download <= cd_data_download | cd_audio_download | cd_subcode_download;
 	if ((~old_download && (cd_data_download || cd_audio_download || cd_subcode_download)) || reset) begin
@@ -511,6 +536,7 @@ always @(posedge clk_sys) begin
 			{cd_dm,cd_dat_len} <= ioctl_dout;
 			cd_dat_cnt <= 0;
 			head_pos <= 1;
+			cd_pkt_hdr <= 1;
 		end
 		else if (cd_dat_cnt < cd_dat_len) begin
 			cd_dat_write <= 1;
@@ -782,17 +808,17 @@ ddram ddram
 	.DDRAM_DIN(core_DDRAM_DIN),
 	.DDRAM_BE(core_DDRAM_BE),
 	.DDRAM_WE(core_DDRAM_WE),
-	.clkref(ce_rom),
+	.clkref(ss_ext ? ss_ext_ce : ce_rom),
 
 	.wraddr(cart_download ? romwr_a : {3'b001,cd_ram_a}),
-	.din(cart_download ? romwr_d : {cd_ram_do,cd_ram_do}),
-	.we(~cart_download & ~use_sdr & cd_ram_wr & ce_rom),
+	.din(cart_download ? romwr_d : ss_ext ? {ss_mem_wd,ss_mem_wd} : {cd_ram_do,cd_ram_do}),
+	.we(~cart_download & ~use_sdr & (ss_ext ? ss_ext_we & ss_ext_ce : cd_ram_wr & ce_rom)),
 	.we_req(rom_wr),
 	.we_ack(dd_wrack),
 	.we_rdy(ram_ddrdy),
 
-	.rdaddr(rom_rd ? {3'b000,(rom_rdaddr + (romwr_a[9] ? 22'h200 : 22'h0))} : {3'b001,cd_ram_a}),
-	.rd(~use_sdr & (rom_rd | cd_ram_rd) & ce_rom),
+	.rdaddr(ss_ext ? {3'b001,ss_ext_a} : rom_rd ? {3'b000,(rom_rdaddr + (romwr_a[9] ? 22'h200 : 22'h0))} : {3'b001,cd_ram_a}),
+	.rd(~use_sdr & (ss_ext ? ~ss_ext_we & ss_ext_ce : (rom_rd | cd_ram_rd) & ce_rom)),
 	.rd_rdy(rom_ddrdy),
 	.dout(rom_ddata)
 );
@@ -803,16 +829,16 @@ sdram sdram
 
 	.init(~pll_locked),
 	.clk(clk_ram),
-	.clkref(ce_rom),
+	.clkref(ss_ext ? ss_ext_ce : ce_rom),
 
-	.waddr(cart_download ? romwr_a : {3'b001,cd_ram_a}),
-	.din(cart_download ? romwr_d : {cd_ram_do,cd_ram_do}),
-	.we(~cart_download & use_sdr & cd_ram_wr & ce_rom),
+	.waddr(cart_download ? romwr_a : ss_ext ? {3'b001,ss_ext_a} : {3'b001,cd_ram_a}),
+	.din(cart_download ? romwr_d : ss_ext ? {ss_mem_wd,ss_mem_wd} : {cd_ram_do,cd_ram_do}),
+	.we(~cart_download & use_sdr & (ss_ext ? ss_ext_we & ss_ext_ce : cd_ram_wr & ce_rom)),
 	.we_req(rom_wr),
 	.we_ack(sd_wrack),
 
-	.raddr(rom_rd ? {3'b000,(rom_rdaddr + (romwr_a[9] ? 22'h200 : 22'h0))} : {3'b001,cd_ram_a}),
-	.rd(use_sdr & (rom_rd | cd_ram_rd) & ce_rom),
+	.raddr(ss_ext ? {3'b001,ss_ext_a} : rom_rd ? {3'b000,(rom_rdaddr + (romwr_a[9] ? 22'h200 : 22'h0))} : {3'b001,cd_ram_a}),
+	.rd(use_sdr & (ss_ext ? ~ss_ext_we & ss_ext_ce : (rom_rd | cd_ram_rd) & ce_rom)),
 	.rd_rdy(rom_sdrdy),
 	.dout(rom_sdata)
 );
@@ -1116,10 +1142,10 @@ MB128 MB128
 	.o_Data(mb128_Data),
 
 	.bk_clk(clk_sys),
-	.bk_address({sd_lba[7:0] - 3'd4,sd_buff_addr}),
+	.bk_address({sd_lba[7:0] - 3'd4,sd_buff_addr[7:0]}),
 	.bk_din(sd_buff_dout),
 	.bk_dout(mb128_dout),
-	.bk_we(~bk_int & sd_buff_wr & sd_ack),
+	.bk_we(~bk_int & sd_buff_wr & sd_ack & ~cd_sd_act),
 	.bk_written(mb128_dirty)
 );
 
@@ -1149,15 +1175,15 @@ assign      sd_buff_din = bk_int ? bk_int_dout : mb128_dout;
 dpram_difclk #(11,8,10,16) backram
 (
 	.clock0(clk_sys),
-   .address_a(bram_addr),
-	.data_a(bram_data),
-	.wren_a(bram_wr),
+	.address_a(ss_bram ? ss_mem_addr[10:0] : bram_addr),
+	.data_a(ss_bram ? ss_mem_wd : bram_data),
+	.wren_a(ss_bram ? ss_mem_we : bram_wr),
 	.q_a(bram_q),
 
 	.clock1(clk_sys),
-	.address_b(defbram[3] ? {sd_lba[1:0],sd_buff_addr} : defbram[2:1]),
+	.address_b(defbram[3] ? {sd_lba[1:0],sd_buff_addr[7:0]} : defbram[2:1]),
 	.data_b(defbram[3] ? sd_buff_dout : defval[defbram[2:1]]),
-	.wren_b(defbram[3] ? bk_int & sd_buff_wr & sd_ack : 1'b1),
+	.wren_b(defbram[3] ? bk_int & sd_buff_wr & sd_ack & ~cd_sd_act : 1'b1),
 	.q_b(bk_int_dout)
 );
 
@@ -1184,20 +1210,23 @@ always @(posedge clk_sys) begin
 	reg old_load = 0, old_save = 0, old_ack;
 	reg mb128sz;
 
-	old_load <= bk_load;
-	old_save <= bk_save;
+	// requests wait while savestates of CD games use the save file
+	if (!cd_busy) begin
+		old_load <= bk_load;
+		old_save <= bk_save;
+	end
 	old_ack  <= sd_ack;
 
-	if(~old_ack & sd_ack) {sd_rd, sd_wr} <= 0;
+	if(~old_ack & sd_ack & ~cd_sd_act) {sd_rd, sd_wr} <= 0;
 
 	if(!bk_state) begin
-		if(bk_ena & ((~old_load & bk_load) | (~old_save & bk_save))) begin
+		if(bk_ena & (cd_bk_force | (~cd_busy & ((~old_load & bk_load) | (~old_save & bk_save))))) begin
 			bk_state <= 1;
-			bk_loading <= bk_load;
-			mb128sz <= bk_load || (mb128_ena && mb128_dirty);
+			bk_loading <= bk_load & ~cd_bk_force;
+			mb128sz <= (bk_load & ~cd_bk_force) || (mb128_ena && mb128_dirty);
 			sd_lba <= 0;
-			sd_rd <=  bk_load;
-			sd_wr <= ~bk_load;
+			sd_rd <=  bk_load & ~cd_bk_force;
+			sd_wr <= ~bk_load | cd_bk_force;
 		end
 		if(old_downloading & ~downloading & bk_ena) begin
 			bk_state <= 1;
@@ -1208,7 +1237,7 @@ always @(posedge clk_sys) begin
 			sd_wr <= 0;
 		end
 	end else begin
-		if(old_ack & ~sd_ack) begin
+		if(old_ack & ~sd_ack & ~cd_sd_act) begin
 			if(sd_lba[8] == mb128sz && &sd_lba[1:0]) begin
 				bk_loading <= 0;
 				bk_state <= 0;
@@ -1261,7 +1290,8 @@ wire  [1:0] ss_slot;
 reg         ss_rom_loaded = 0;
 always @(posedge clk_sys) if (cart_download) ss_rom_loaded <= 1;
 
-wire        ss_allow = ss_rom_loaded & ~cd_en;
+// CD games keep their states in the save file
+wire        ss_allow = ss_rom_loaded & (~cd_en | bk_ena);
 
 savestate_ui #(.INFO_TIMEOUT_BITS(25)) savestate_ui
 (
@@ -1286,13 +1316,13 @@ savestate_ui #(.INFO_TIMEOUT_BITS(25)) savestate_ui
 
 wire        ss_busy, ss_saving, ss_loading, ss_sleep, ss_restore, ss_load_done;
 wire        ss_paused;
-wire [63:0] ss_bus_din, ss_bus_dout, ss_core_dout, ss_input_dout, ss_id_dout;
+wire [63:0] ss_bus_din, ss_bus_dout, ss_core_dout, ss_input_dout, ss_id_dout, ss_cd_dout;
 wire  [9:0] ss_bus_adr;
 wire        ss_bus_wren, ss_bus_rst;
 wire [24:0] ss_mem_addr;
 wire  [3:0] ss_mem_type;
-wire        ss_mem_we;
-wire  [7:0] ss_mem_wd, ss_mem_rd;
+wire        ss_mem_we, ss_mem_rden;
+wire  [7:0] ss_mem_wd, ss_mem_rd, ss_core_rd;
 wire [63:0] ss_ddr_din, ss_ddr_dout;
 wire [25:0] ss_ddr_adr;
 wire  [7:0] ss_ddr_be;
@@ -1305,10 +1335,15 @@ reg  [7:0]  ss_hold = 0;
 reg         ss_refetch = 0;
 reg  [1:0]  ss_req_slot;
 
+wire        cd_busy, cd_hold, cd_eng_save, cd_eng_load;
+wire        cd_fz = ss_sleep | cd_hold;
+reg         cd_fz_old = 0;
+
 always @(posedge clk_sys) begin
 	ss_req_save <= 0;
 	ss_req_load <= 0;
 	ss_refetch  <= 0;
+	cd_fz_old   <= cd_fz;
 
 	if (ss_save) ss_pend_save <= 1;
 	if (ss_load) ss_pend_load <= 1;
@@ -1317,7 +1352,7 @@ always @(posedge clk_sys) begin
 		ss_pend_save <= 0;
 		ss_pend_load <= 0;
 	end
-	else if (!ss_busy && !ss_hold && !ss_req_save && !ss_req_load) begin
+	else if (!ss_busy && !cd_busy && !ss_hold && !ss_req_save && !ss_req_load) begin
 		ss_req_slot <= ss_slot;
 		if (ss_pend_save) begin
 			ss_pend_save <= 0;
@@ -1329,25 +1364,28 @@ always @(posedge clk_sys) begin
 		end
 	end
 
-	// after a load the CPU's current ROM read is done again before the core runs
-	if (ss_load_done) ss_hold <= 8'd200;
+	// after a load the CPU's current ROM read is done again before the core runs;
+	// with a CD also after a save, as the RAM of the CD shares that port
+	if (cd_en ? (cd_fz_old & ~cd_fz) : ss_load_done) ss_hold <= 8'd200;
 	else if (ss_hold) ss_hold <= ss_hold - 1'd1;
 	if (ss_hold == 8'd150) ss_refetch <= 1;
 end
 
-wire ss_freeze_req = ss_sleep | (ss_hold != 0);
+wire ss_freeze_req = ss_sleep | (ss_hold != 0) | cd_hold | (cd_en & cd_fz_old);
 
 savestates savestates
 (
 	.clk                    (clk_sys),
 	.restore                (ss_restore),
 	.load_done              (ss_load_done),
-	.increaseSSHeaderCount  (~status[39]),
-	.save                   (ss_req_save),
-	.load                   (ss_req_load),
-	.savestate_address      (26'h3800000 + {ss_req_slot, 16'h0000}),
+	.increaseSSHeaderCount  (~status[39] | cd_en),
+	.save                   (cd_en ? cd_eng_save : ss_req_save),
+	.load                   (cd_en ? cd_eng_load : ss_req_load),
+	.savestate_address      (cd_en ? 26'h3900000 : 26'h3800000 + {ss_req_slot, 16'h0000}),
 	.savestate_busy         (ss_busy),
 	.paused                 (ss_paused),
+	.cd_mode                (cd_en),
+	.ac_mode                (status[14]),
 	.BUS_Din                (ss_bus_din),
 	.BUS_Adr                (ss_bus_adr),
 	.BUS_wren               (ss_bus_wren),
@@ -1357,18 +1395,19 @@ savestates savestates
 	.saving_savestate       (ss_saving),
 	.sleep_savestate        (ss_sleep),
 	.Save_RAMAddr           (ss_mem_addr),
-	.Save_RAMRdEn           (),
+	.Save_RAMRdEn           (ss_mem_rden),
 	.Save_RAMWrEn           (ss_mem_we),
 	.Save_RAMWriteData      (ss_mem_wd),
 	.Save_RAMReadData       (ss_mem_rd),
 	.Save_RAMType           (ss_mem_type),
+	.Save_RAMWait           (ss_ext_wait),
 	.bus_out_Din            (ss_ddr_din),
 	.bus_out_Dout           (ss_ddr_dout),
 	.bus_out_Adr            (ss_ddr_adr),
 	.bus_out_rnw            (ss_ddr_rnw),
 	.bus_out_ena            (ss_ddr_req),
 	.bus_out_be             (ss_ddr_be),
-	.bus_out_done           (ss_ddr_done)
+	.bus_out_done           (ss_eng_done)
 );
 
 // 0: format id, 7: controller ports
@@ -1379,7 +1418,160 @@ wire [63:0] ss_input_in;
 eReg_SavestateV #(10'd7, 64'd0) ss_reg_input (clk_sys, ss_bus_din, ss_bus_adr, ss_bus_wren, ss_bus_rst, ss_input_dout,
 	{52'd0, mouse_cnt, last_gp, scan_counter, high_buttons, joy_port}, ss_input_in);
 
-assign ss_bus_dout = ss_core_dout | ss_input_dout | ss_id_dout;
+assign ss_bus_dout = ss_core_dout | ss_input_dout | ss_id_dout | ss_cd_dout;
+
+// memories outside the core: 8 backup RAM, 10 CD RAM, 11 Arcade Card RAM
+wire ss_bram = (ss_saving | ss_loading) && (ss_mem_type == 4'd8);
+wire ss_ext  = (ss_saving | ss_loading) && (ss_mem_type == 4'd10 || ss_mem_type == 4'd11);
+
+// CD RAM and Arcade Card RAM are reached through the port of the ROM, in SDRAM or DDR3
+wire [21:0] ss_ext_a = (ss_mem_type == 4'd10) ? {4'b1000, ss_mem_addr[17:0]} : {1'b0, ss_mem_addr[20:0]};
+reg         ss_ext_ce = 0, ss_ext_we = 0, ss_ext_wait = 0;
+reg   [7:0] ss_ext_q;
+wire        ss_ddr_pending;
+
+always @(posedge clk_sys) begin
+	reg       old_rd, old_we;
+	reg [1:0] st = 0;
+	reg [3:0] cnt;
+
+	old_rd <= ss_mem_rden;
+	old_we <= ss_mem_we;
+	ss_ext_ce <= 0;
+
+	case (st)
+		0: if (ss_ext && ((ss_mem_rden & ~old_rd) || (ss_mem_we & ~old_we))) begin
+				ss_ext_wait <= 1;
+				ss_ext_we   <= ss_mem_we;
+				st <= 1;
+			end
+		// a DDR3 access of the engine goes first
+		1: if (!ss_ddr_pending) begin
+				ss_ext_ce <= 1;
+				cnt <= 0;
+				st  <= 2;
+			end
+		2: begin
+				if (~&cnt) cnt <= cnt + 1'd1;
+				if (&cnt && (use_sdr ? rom_sdrdy : (rom_ddrdy & ram_ddrdy))) begin
+					ss_ext_q    <= use_sdr ? rom_sdata : rom_ddata;
+					ss_ext_wait <= 0;
+					st <= 0;
+				end
+			end
+		default: st <= 0;
+	endcase
+end
+
+assign ss_mem_rd = ss_bram ? bram_q : ss_ext ? ss_ext_q : ss_core_rd;
+
+// CD games
+wire        cd_info_req;
+wire  [7:0] cd_info;
+wire        cd_fifo_clr, scsi_fifo_rd;
+wire        cd_block, cd_inj_req;
+wire [111:0] cd_inj_data;
+wire        cd_stat_get, cd_dout_get;
+wire [15:0] cd_stat_core;
+wire        cd_drop;
+wire        cd_ddr_owner, cd_ddr_rnw, cd_ddr_req;
+wire [25:0] cd_ddr_adr;
+wire [63:0] cd_ddr_din;
+wire        cd_bk_force;
+wire        cd_sd_act, cd_sd_rd, cd_sd_wr;
+wire [31:0] cd_sd_lba;
+wire  [5:0] cd_sd_blk;
+wire [15:0] cd_buff_din;
+
+wire [31:0] hps_sd_lba = cd_sd_act ? cd_sd_lba : sd_lba;
+wire  [5:0] hps_sd_blk = cd_sd_act ? cd_sd_blk : 6'd0;
+wire        hps_sd_rd  = cd_sd_act ? cd_sd_rd  : sd_rd;
+wire        hps_sd_wr  = cd_sd_act ? cd_sd_wr  : sd_wr;
+
+ss_cd ss_cd
+(
+	.clk          (clk_sys),
+	.reset        (reset | cart_download),
+
+	.cd_mode      (cd_en),
+	.ac_mode      (status[14]),
+	.core_ddr     (~use_sdr),
+
+	.save         (ss_req_save & cd_en),
+	.load         (ss_req_load & cd_en),
+	.slot         (ss_req_slot),
+	.busy         (cd_busy),
+	.info_req     (cd_info_req),
+	.info         (cd_info),
+
+	.eng_save     (cd_eng_save),
+	.eng_load     (cd_eng_load),
+	.eng_busy     (ss_busy),
+	.eng_load_done(ss_load_done),
+	.eng_restore  (ss_restore),
+	.hold         (cd_hold),
+	.paused       (ss_paused),
+	.core_run     (~ss_freeze_req & ~ss_paused),
+	.fifo_clr     (cd_fifo_clr),
+
+	.bus_din      (ss_bus_din),
+	.bus_adr      (ss_bus_adr),
+	.bus_wren     (ss_bus_wren),
+	.bus_rst      (ss_bus_rst),
+	.bus_dout     (ss_cd_dout),
+
+	.comm         (cd_comm),
+	.comm_ev      (cd_comm_ev),
+	.dataout_ev   (cd_dataout_ev),
+	.reset_ev     (cd_reset_ev),
+	.block_out    (cd_block),
+	.inj_req      (cd_inj_req),
+	.inj_data     (cd_inj_data),
+
+	.stat_ev      (cd_stat_rec),
+	.stat_in      (cd_stat),
+	.dout_ev      (cd_dataout_req),
+	.stat_get     (cd_stat_get),
+	.stat_out     (cd_stat_core),
+	.dout_req     (cd_dout_get),
+
+	.pkt_hdr      (cd_pkt_hdr),
+	.pkt_ch       (cd_pkt_ch),
+	.pkt_len      (cd_dat_len),
+	.byte_wr      (cd_data_wr | cd_audio_wr | cd_subcode_wr),
+	.byte_idx     (cd_dat_cnt),
+	.byte_val     (!cd_dat_byte ? cd_dat[7:0] : cd_dat[15:8]),
+	.drop         (cd_drop),
+	.scsi_rd      (scsi_fifo_rd),
+
+	.ddr_owner    (cd_ddr_owner),
+	.ddr_adr      (cd_ddr_adr),
+	.ddr_din      (cd_ddr_din),
+	.ddr_rnw      (cd_ddr_rnw),
+	.ddr_req      (cd_ddr_req),
+	.ddr_done     (ss_ddr_done & cd_ddr_owner),
+	.ddr_dout     (ss_ddr_dout),
+
+	.mounting     (downloading & img_mounted),
+	.img_size     (img_size),
+	.hps_wr       (hps_sd_wr),
+	.hps_lba      (hps_sd_lba),
+	.hps_blks     (hps_sd_blk),
+	.bk_force     (cd_bk_force),
+	.bk_busy      (bk_state),
+	.sd_act       (cd_sd_act),
+	.sd_lba       (cd_sd_lba),
+	.sd_blk_cnt   (cd_sd_blk),
+	.sd_rd        (cd_sd_rd),
+	.sd_wr        (cd_sd_wr),
+	.sd_ack       (sd_ack),
+	.sd_buff_addr (sd_buff_addr),
+	.sd_buff_dout (sd_buff_dout),
+	.sd_buff_din  (cd_buff_din),
+	.sd_buff_wr   (sd_buff_wr)
+);
+
+wire ss_eng_done = ss_ddr_done & ~cd_ddr_owner;
 
 wire  [7:0] core_DDRAM_BURSTCNT, ss_DDRAM_BURSTCNT;
 wire [28:0] core_DDRAM_ADDR, ss_DDRAM_ADDR;
@@ -1387,17 +1579,20 @@ wire [63:0] core_DDRAM_DIN, ss_DDRAM_DIN;
 wire  [7:0] core_DDRAM_BE, ss_DDRAM_BE;
 wire        core_DDRAM_RD, ss_DDRAM_RD;
 wire        core_DDRAM_WE, ss_DDRAM_WE;
+wire        ss_ddr_sel;
 
 ss_ddram ss_ddram
 (
 	.clk_sys          (clk_sys),
-	.adr              (ss_ddr_adr),
-	.din              (ss_ddr_din),
-	.be               (ss_ddr_be),
-	.rnw              (ss_ddr_rnw),
-	.req              (ss_ddr_req),
+	.adr              (cd_ddr_owner ? cd_ddr_adr : ss_ddr_adr),
+	.din              (cd_ddr_owner ? cd_ddr_din : ss_ddr_din),
+	.be               (cd_ddr_owner ? 8'hFF      : ss_ddr_be),
+	.rnw              (cd_ddr_owner ? cd_ddr_rnw : ss_ddr_rnw),
+	.req              (cd_ddr_owner ? cd_ddr_req : ss_ddr_req),
 	.done             (ss_ddr_done),
 	.dout             (ss_ddr_dout),
+	.pending          (ss_ddr_pending),
+	.sel              (ss_ddr_sel),
 
 	.DDRAM_CLK        (clk_ram),
 	.DDRAM_BUSY       (DDRAM_BUSY),
@@ -1411,10 +1606,7 @@ ss_ddram ss_ddram
 	.DDRAM_WE         (ss_DDRAM_WE)
 );
 
-// DDR3 belongs to the savestate engine only while the core is frozen
-reg ss_ddr_sel = 0;
-always @(posedge clk_ram) ss_ddr_sel <= ss_sleep & ss_paused;
-
+// DDR3 belongs to the savestate channel for the time of its requests
 assign DDRAM_BURSTCNT = ss_ddr_sel ? ss_DDRAM_BURSTCNT : core_DDRAM_BURSTCNT;
 assign DDRAM_ADDR     = ss_ddr_sel ? ss_DDRAM_ADDR     : core_DDRAM_ADDR;
 assign DDRAM_DIN      = ss_ddr_sel ? ss_DDRAM_DIN      : core_DDRAM_DIN;

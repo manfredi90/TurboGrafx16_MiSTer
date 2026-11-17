@@ -37,7 +37,16 @@ entity SCSI is
 		CD_DATA_END	: out std_logic;
 		STOP_CD_SND	: out std_logic;
 		
-		DBG_DATAIN_CNT: out unsigned(15 downto 0)
+		DBG_DATAIN_CNT: out unsigned(15 downto 0);
+
+		-- savestates
+		FREEZE      : in  std_logic := '0';
+		SS_RESTORE  : in  std_logic := '0';
+		SS_FIFO_CLR : in  std_logic := '0';
+		SS_IN       : in  std_logic_vector(255 downto 0) := (others => '0');
+		SS_OUT      : out std_logic_vector(255 downto 0);
+		FIFO_RD     : out std_logic;
+		FIFO_EMPTY  : out std_logic
 	);
 end SCSI;
 
@@ -97,6 +106,50 @@ architecture rtl of SCSI is
 	signal STAT_COUNT    : unsigned(15 downto 0);
 	signal DELAY_COUNT   : unsigned(16 downto 0);
 
+	signal FIFO_ACLR     : std_logic;
+	signal FIFO_RDREQ_G  : std_logic;
+	signal SS_SP         : std_logic_vector(3 downto 0);
+
+	function sp_code(p : SCSIPhase_t) return std_logic_vector is
+	begin
+		case p is
+			when SP_FREE          => return x"0";
+			when SP_COMM_BEFOREREQ => return x"1";
+			when SP_COMM_START    => return x"2";
+			when SP_COMM_END      => return x"3";
+			when SP_STAT_START    => return x"4";
+			when SP_STAT_END      => return x"5";
+			when SP_STAT_HOLD     => return x"6";
+			when SP_MSGIN_START   => return x"7";
+			when SP_MSGIN_END     => return x"8";
+			when SP_MSGIN_HOLD    => return x"9";
+			when SP_DATAIN_START  => return x"A";
+			when SP_DATAIN_END    => return x"B";
+			when SP_DATAOUT_START => return x"C";
+			when others           => return x"D";
+		end case;
+	end function;
+
+	function sp_phase(c : std_logic_vector(3 downto 0)) return SCSIPhase_t is
+	begin
+		case c is
+			when x"1"   => return SP_COMM_BEFOREREQ;
+			when x"2"   => return SP_COMM_START;
+			when x"3"   => return SP_COMM_END;
+			when x"4"   => return SP_STAT_START;
+			when x"5"   => return SP_STAT_END;
+			when x"6"   => return SP_STAT_HOLD;
+			when x"7"   => return SP_MSGIN_START;
+			when x"8"   => return SP_MSGIN_END;
+			when x"9"   => return SP_MSGIN_HOLD;
+			when x"A"   => return SP_DATAIN_START;
+			when x"B"   => return SP_DATAIN_END;
+			when x"C"   => return SP_DATAOUT_START;
+			when x"D"   => return SP_DATAOUT_END;
+			when others => return SP_FREE;
+		end case;
+	end function;
+
 begin
 
 	process( RESET_N, CLK )
@@ -120,9 +173,13 @@ begin
 	end process;
 
 	
+	FIFO_ACLR <= not RESET_N or SS_FIFO_CLR;
+	-- a read requested just before a freeze is done when the core runs again
+	FIFO_RDREQ_G <= FIFO_RD_REQ and not FREEZE;
+
 	FIFO : entity work.SCSI_FIFO 
 	port map(
-		aclr     => not RESET_N,
+		aclr     => FIFO_ACLR,
 
 		wrclk		=> CLK,
 		data		=> FIFO_D,
@@ -130,7 +187,7 @@ begin
 		wrfull	=> FULL,
 		
 		rdclk		=> CLK,
-		rdreq		=> FIFO_RD_REQ,
+		rdreq		=> FIFO_RDREQ_G,
 		rdempty	=> EMPTY,
 		q			=> FIFO_Q
 	);
@@ -163,6 +220,7 @@ begin
 			DATAIN_CNT  <= (others => '0');
 
 		elsif rising_edge( CLK ) then
+			if FREEZE = '0' then
 			if STAT_GET = '1' then
 				STAT_PEND <= '1';
 			end if;
@@ -357,8 +415,49 @@ begin
 					when others => null;
 				end case;
 			end if;
+			end if;
+
+			if SS_RESTORE = '1' then
+				for i in 0 to 7 loop
+					COMM(i) <= SS_IN(i*8+7 downto i*8);
+					DATA_BUF(i) <= SS_IN(128+i*8+7 downto 128+i*8);
+				end loop;
+				for i in 8 to 11 loop
+					COMM(i) <= SS_IN(i*8+7 downto i*8);
+				end loop;
+				DATA_BUF(8) <= SS_IN(199 downto 192);
+				DATA_BUF(9) <= SS_IN(207 downto 200);
+				DBO <= SS_IN(103 downto 96);
+				BSY_Nr <= SS_IN(104);
+				MSG_Nr <= SS_IN(105);
+				CD_Nr <= SS_IN(106);
+				IO_Nr <= SS_IN(107);
+				REQ_Nr <= SS_IN(108);
+				COMM_POS <= unsigned(SS_IN(112 downto 109));
+				DATA_POS <= unsigned(SS_IN(116 downto 113));
+				SP <= sp_phase(SS_IN(120 downto 117));
+				STOP_CD_SND <= SS_IN(121);
+				COMM_OUT <= SS_IN(122);
+				DATA_OUT <= SS_IN(123);
+				CD_DATA_END <= SS_IN(124);
+				STAT_PEND <= SS_IN(125);
+				DOUT_PEND <= SS_IN(126);
+				STAT_COUNT <= unsigned(SS_IN(223 downto 208));
+				DELAY_COUNT <= unsigned(SS_IN(240 downto 224));
+				FIFO_RD_REQ <= '0';
+			end if;
 		end if;
 	end process;
+
+	SS_SP <= sp_code(SP);
+	SS_OUT <= (255 downto 241 => '0') & std_logic_vector(DELAY_COUNT) & std_logic_vector(STAT_COUNT) &
+	          DATA_BUF(9) & DATA_BUF(8) & DATA_BUF(7) & DATA_BUF(6) & DATA_BUF(5) & DATA_BUF(4) & DATA_BUF(3) & DATA_BUF(2) & DATA_BUF(1) & DATA_BUF(0) &
+	          '0' & DOUT_PEND & STAT_PEND & CD_DATA_END & DATA_OUT & COMM_OUT & STOP_CD_SND & SS_SP &
+	          std_logic_vector(DATA_POS) & std_logic_vector(COMM_POS) & REQ_Nr & IO_Nr & CD_Nr & MSG_Nr & BSY_Nr & DBO &
+	          COMM(11) & COMM(10) & COMM(9) & COMM(8) & COMM(7) & COMM(6) & COMM(5) & COMM(4) & COMM(3) & COMM(2) & COMM(1) & COMM(0);
+
+	FIFO_RD <= FIFO_RD_REQ;
+	FIFO_EMPTY <= EMPTY;
 	
 	BSY_N <= BSY_Nr;
 	MSG_N <= MSG_Nr;

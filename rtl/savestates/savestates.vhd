@@ -3,8 +3,10 @@
 -- Slot layout (32-bit words from the slot base):
 --   0     : change counter (watched by Main_MiSTer)
 --   1     : size in 32-bit words, without these two header words
---   2..   : INTERNALSCOUNT 64-bit registers from the savestate bus
---   then  : the memories of t_savetypes, in table order
+--   2..   : 64-bit registers from the savestate bus: 64 for HuCard and
+--           SuperGrafx games, 128 with the CD
+--   then  : the memories of t_savetypes, in table order: 0..7 always,
+--           8..10 with the CD, 11 with the Arcade Card
 --
 -- The layout is fixed: new registers take free bus indexes and new
 -- memories go after the last one, so older states stay loadable.
@@ -30,6 +32,8 @@ entity savestates is
       savestate_busy          : out    std_logic;
 
       paused                  : in     std_logic;
+      cd_mode                 : in     std_logic := '0';
+      ac_mode                 : in     std_logic := '0';
 
       BUS_Din                 : out    std_logic_vector(BUS_buswidth-1 downto 0) := (others => '0');
       BUS_Adr                 : buffer std_logic_vector(BUS_busadr-1 downto 0) := (others => '0');
@@ -47,6 +51,7 @@ entity savestates is
       Save_RAMWriteData       : out    std_logic_vector(7 downto 0) := (others => '0');
       Save_RAMReadData        : in     std_logic_vector(7 downto 0);
       Save_RAMType            : out    unsigned(3 downto 0);
+      Save_RAMWait            : in     std_logic := '0';
 
       bus_out_Din             : out    std_logic_vector(63 downto 0) := (others => '0');
       bus_out_Dout            : in     std_logic_vector(63 downto 0);
@@ -60,14 +65,17 @@ end entity;
 
 architecture arch of savestates is
 
-   constant MAXSIZEMEM     : integer := 65536;
+   constant MAXSIZEMEM     : integer := 2097152;
 
    constant SETTLECOUNT    : integer := 100;
    constant HEADERCOUNT    : integer := 2;
-   constant INTERNALSCOUNT : integer := 64;
+   constant INTERNALSCOUNT    : integer := 64;
+   constant INTERNALSCOUNT_CD : integer := 128;
 
-   constant SAVETYPESCOUNT : integer := 8;
+   constant SAVETYPESCOUNT : integer := 12;
    signal savetype_counter : integer range 0 to SAVETYPESCOUNT;
+   signal types_count      : integer range 0 to SAVETYPESCOUNT;
+   signal internals_count  : integer range 0 to INTERNALSCOUNT_CD;
 
    type save_type is record
       OFFSET     : integer range 0 to 16#FFFFFF#;
@@ -84,15 +92,23 @@ architecture arch of savestates is
       (0,   256),  -- 4: PSG waveforms
       (0, 32768),  -- 5: Populous RAM
       (0, 65536),  -- 6: VRAM of the second VDC (SuperGrafx)
-      (0,   512)   -- 7: SAT of the second VDC (SuperGrafx)
+      (0,   512),  -- 7: SAT of the second VDC (SuperGrafx)
+      (0,  2048),  -- 8: CD backup RAM
+      (0, 131072), -- 9: ADPCM RAM, one 4-bit sample per byte
+      (0, 262144), -- 10: CD RAM and Super CD RAM
+      (0, 2097152) -- 11: Arcade Card RAM
    );
 
    -- 32-bit words after the header: registers, then memories
    constant STATESIZE      : integer := INTERNALSCOUNT * 2 + (32768 + 65536 + 512 + 1024 + 256 + 32768 + 65536 + 512) / 4;
+   constant STATESIZE_CD   : integer := INTERNALSCOUNT_CD * 2 + (32768 + 65536 + 512 + 1024 + 256 + 32768 + 65536 + 512 + 2048 + 131072 + 262144) / 4;
+   constant STATESIZE_AC   : integer := STATESIZE_CD + 2097152 / 4;
    -- smallest size accepted on load: the registers alone
    constant MINSIZE        : integer := INTERNALSCOUNT * 2;
-   -- largest size that fits in a slot (256 KB)
+   -- largest size that fits in a HuCard slot (256 KB)
    constant MAXSIZE        : integer := 16#10000# - HEADERCOUNT;
+
+   signal state_size       : integer range 0 to STATESIZE_AC;
 
    type tstate is
    (
@@ -142,7 +158,9 @@ begin
 
          bus_out_be    <= x"FF";
 
-         memory_slow <= memory_slow + 1;
+         if (memory_slow /= 6 or Save_RAMWait = '0') then
+            memory_slow <= memory_slow + 1;
+         end if;
          if (memory_slow = 6) then
             Save_RAMRdEn  <= '0';
             Save_RAMWrEn  <= '0';
@@ -152,6 +170,20 @@ begin
 
             when IDLE =>
                savetype_counter <= 0;
+               if (cd_mode = '1') then
+                  internals_count <= INTERNALSCOUNT_CD;
+                  if (ac_mode = '1') then
+                     types_count <= 12;
+                     state_size  <= STATESIZE_AC;
+                  else
+                     types_count <= 11;
+                     state_size  <= STATESIZE_CD;
+                  end if;
+               else
+                  internals_count <= INTERNALSCOUNT;
+                  types_count     <= 8;
+                  state_size      <= STATESIZE;
+               end if;
                if (save = '1') then
                   state                <= SAVE_WAITSETTLE;
                   settle               <= 0;
@@ -189,7 +221,7 @@ begin
             when SAVEINTERNALS_WRITE =>
                if (bus_out_done = '1') then
                   bus_out_Adr <= std_logic_vector(unsigned(bus_out_Adr) + 2);
-                  if (count < INTERNALSCOUNT) then
+                  if (count < internals_count) then
                      state       <= SAVEINTERNALS_WAIT;
                      count       <= count + 1;
                      BUS_adr     <= std_logic_vector(unsigned(BUS_adr) + 1);
@@ -200,7 +232,7 @@ begin
                end if;
 
             when SAVEMEMORY_NEXT =>
-               if (savetype_counter < SAVETYPESCOUNT) then
+               if (savetype_counter < types_count) then
                   state          <= SAVEMEMORY_READ;
                   bytecounter    <= 0;
                   count          <= 8;
@@ -212,7 +244,7 @@ begin
                else
                   state          <= SAVESIZEAMOUNT;
                   bus_out_Adr    <= savestate_address;
-                  bus_out_Din    <= std_logic_vector(to_unsigned(STATESIZE, 32)) & std_logic_vector(header_amount);
+                  bus_out_Din    <= std_logic_vector(to_unsigned(state_size, 32)) & std_logic_vector(header_amount);
                   bus_out_ena    <= '1';
                   if (increaseSSHeaderCount = '0') then
                      bus_out_be  <= x"F0";
@@ -274,8 +306,15 @@ begin
 
             when LOAD_HEADERAMOUNTCHECK =>
                if (bus_out_done = '1') then
-                  if (unsigned(bus_out_Dout(63 downto 32)) >= to_unsigned(MINSIZE, 32) and
-                      unsigned(bus_out_Dout(63 downto 32)) <= to_unsigned(MAXSIZE, 32)) then
+                  if (cd_mode = '1' and unsigned(bus_out_Dout(63 downto 32)) = to_unsigned(STATESIZE_AC, 32)) then
+                     types_count <= 12;
+                  elsif (cd_mode = '1') then
+                     types_count <= 11;
+                  end if;
+                  if ((cd_mode = '0' and unsigned(bus_out_Dout(63 downto 32)) >= to_unsigned(MINSIZE, 32) and
+                                         unsigned(bus_out_Dout(63 downto 32)) <= to_unsigned(MAXSIZE, 32)) or
+                      (cd_mode = '1' and (unsigned(bus_out_Dout(63 downto 32)) = to_unsigned(STATESIZE_CD, 32) or
+                                          unsigned(bus_out_Dout(63 downto 32)) = to_unsigned(STATESIZE_AC, 32)))) then
                      header_amount        <= unsigned(bus_out_Dout(31 downto 0));
                      state                <= LOADINTERNALS_READ;
                      bus_out_Adr          <= std_logic_vector(unsigned(savestate_address) + HEADERCOUNT);
@@ -298,7 +337,7 @@ begin
 
             when LOADINTERNALS_WRITE =>
                bus_out_Adr <= std_logic_vector(unsigned(bus_out_Adr) + 2);
-               if (count < INTERNALSCOUNT) then
+               if (count < internals_count) then
                   state          <= LOADINTERNALS_READ;
                   count          <= count + 1;
                   bus_out_ena    <= '1';
@@ -314,7 +353,7 @@ begin
 
             when LOADMEMORY_NEXT =>
                if (memory_slow = 7) then
-                  if (savetype_counter < SAVETYPESCOUNT) then
+                  if (savetype_counter < types_count) then
                      state          <= LOADMEMORY_READ;
                      count          <= 8;
                      maxcount       <= savetypes(savetype_counter).SIZE;

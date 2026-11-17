@@ -15,7 +15,13 @@ entity MSM5205 is
 		VCK_R		: out std_logic;
 		VCK_F		: out std_logic;
 		
-		SOUT		: out signed(15 downto 0)
+		SOUT		: out signed(15 downto 0);
+
+		-- savestates
+		FREEZE   : in  std_logic := '0';
+		SS_RESTORE : in std_logic := '0';
+		SS_IN    : in  std_logic_vector(63 downto 0) := (others => '0');
+		SS_OUT   : out std_logic_vector(63 downto 0)
 	);
 end MSM5205;
 
@@ -92,6 +98,7 @@ begin
 	process( CLK )
 	begin
 		if rising_edge(CLK) then
+			if FREEZE = '0' then
 			SAMPLE_RCE <= '0';
 			SAMPLE_FCE <= '0';
 			if XTI = '1' then
@@ -103,6 +110,12 @@ begin
 					CLK_CNT <= (others => '0');
 					SAMPLE_FCE <= '1';
 				end if;
+			end if;
+			end if;
+			if SS_RESTORE = '1' then
+				CLK_CNT <= unsigned(SS_IN(5 downto 0));
+				SAMPLE_RCE <= SS_IN(6);
+				SAMPLE_FCE <= SS_IN(7);
 			end if;
 		end if;
 	end process;
@@ -121,6 +134,7 @@ begin
 			STEP <= (others => '0');
 			SAMPLE <= x"0000";
 		elsif rising_edge(CLK) then
+			if FREEZE = '0' then
 			DEC_EXEC <= '0';
 			if SAMPLE_FCE = '1' then
 				DEC_DATA <= unsigned(D);
@@ -157,8 +171,18 @@ begin
 					STEP <= NEXT_STEP(5 downto 0);
 				end if;
 			end if;
+			end if;
+			if SS_RESTORE = '1' then
+				DEC_DATA <= unsigned(SS_IN(11 downto 8));
+				DEC_EXEC <= SS_IN(12);
+				SAMPLE <= unsigned(SS_IN(28 downto 13));
+				STEP <= unsigned(SS_IN(34 downto 29));
+			end if;
 		end if;
 	end process;
+
+	SS_OUT <= (63 downto 35 => '0') & std_logic_vector(STEP) & std_logic_vector(SAMPLE) & DEC_EXEC &
+	          std_logic_vector(DEC_DATA) & SAMPLE_FCE & SAMPLE_RCE & std_logic_vector(CLK_CNT);
 	
 	SOUT <= signed(SAMPLE(11 downto 0)) & x"0";
 

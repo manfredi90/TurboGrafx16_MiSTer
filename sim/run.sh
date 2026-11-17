@@ -3,7 +3,8 @@
 # run A saves at frame 5, run C never saves, run B loads that state at frame 3.
 # A must match C (saving does not disturb the core) and B must match A after the save point,
 # cycle by cycle: CPU reads and writes, PSG output and video frame hashes.
-# Needs GHDL 4 (mcode or LLVM backend) and python3. Optional argument: pce or sgx (default both).
+# Needs GHDL 4 (mcode or LLVM backend) and python3. Optional argument: pce, sgx or cd (default all).
+# cd: the CD unit (ADPCM, SCSI with a command waiting for its status, then data and status phases).
 set -e
 cd "$(dirname "$0")"
 R=../rtl
@@ -14,6 +15,7 @@ python3 mk_sim_files.py
 python3 mk_top_sim.py
 python3 rom/asm.py rom/sstest.asm work/sstest.pce
 python3 rom/asm.py rom/sgxtest.asm work/sgxtest.pce
+python3 rom/asm.py rom/cdtest.asm work/cdtest.pce
 $GHDL -a --std=08 -frelaxed --workdir=work --work=altera_mf altera_mf_stub.vhd altsyncram_sim.vhd 2>/dev/null
 for f in $R/savestates/bus_savestates.vhd $R/savestates/savestates.vhd $R/dpram.vhd \
          $R/HUC6280/HUC6280_PKG.vhd $R/HUC6280/AddSubBCD.vhd $R/HUC6280/HUC6280_ALU.vhd $R/HUC6280/HUC6280_AG.vhd \
@@ -24,7 +26,7 @@ for f in $R/savestates/bus_savestates.vhd $R/savestates/savestates.vhd $R/dpram.
 done
 $GHDL -e $GHDLOPT $F tb 2>&1 | grep -i "error" || true
 test() {
-  RUN="$GHDL -r $F tb --ieee-asserts=disable -gROMFILE=work/$1test.pce -gSGXMODE=$2"
+  RUN="$GHDL -r $F tb --ieee-asserts=disable -gROMFILE=work/$1test.pce -gSGXMODE=$2 $3"
   $RUN -gMODE=1 -gF_EVENT=5 -gF_RUN=6 -gLOGFILE=work/$1_a.log -gSTATEFILE=work/$1_state.txt &
   $RUN -gMODE=0 -gF_EVENT=5 -gF_RUN=6 -gLOGFILE=work/$1_c.log &
   wait
@@ -33,5 +35,7 @@ test() {
   python3 compare.py ac work/$1_a.log work/$1_c.log
   python3 compare.py ab work/$1_a.log work/$1_b.log work/$1_state.txt
 }
-[ "$1" = sgx ] || test ss 0
-[ "$1" = pce ] || test sgx 1
+[ -z "$1" -o "$1" = pce ] && test ss 0
+[ -z "$1" -o "$1" = sgx ] && test sgx 1
+[ -z "$1" -o "$1" = cd ] && test cd 0 "-gCDMODE=1 -gT_DATA=3900000 -gT_STAT=4300000"
+true

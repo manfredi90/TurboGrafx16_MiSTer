@@ -250,7 +250,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.sha }}
-      - run: sudo apt-get update -q && sudo apt-get install -y -q ghdl
+      - run: sudo apt-get update -q && sudo apt-get install -y -q ghdl verilator
+      - run: sh sim/cd/run.sh
       - run: sh sim/run.sh
 
   # publish the SD card package on the savestates branch, in releases/ like the upstream cores

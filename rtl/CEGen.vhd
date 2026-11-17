@@ -10,7 +10,9 @@ ENTITY CEGen IS
 		IN_CLK    : in  integer;
 		OUT_CLK   : in  integer;
 
-		CE        : out STD_LOGIC
+		CE        : out STD_LOGIC;
+
+		FREEZE    : in  STD_LOGIC := '0'
 	);
 END CEGen;
 
@@ -22,7 +24,7 @@ BEGIN
 		if RST_N = '0' then
 			CLK_SUM := 0;
 			CE <= '0';
-		elsif rising_edge(CLK) then
+		elsif rising_edge(CLK) and FREEZE = '0' then
 			CE <= '0';
 			CLK_SUM := CLK_SUM + OUT_CLK;
 			if CLK_SUM >= IN_CLK then

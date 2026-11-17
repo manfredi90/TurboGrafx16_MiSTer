@@ -10,6 +10,9 @@ entity tb is
 		MODE      : integer := 0;        -- 0: plain run, 1: save at F_EVENT, 2: load at F_EVENT
 		ROMFILE   : string  := "rom/sstest.pce";
 		SGXMODE   : integer := 0;
+		CDMODE    : integer := 0;        -- CD unit on; the testbench gives data and a status at T_DATA and T_STAT
+		T_DATA    : integer := 0;
+		T_STAT    : integer := 0;
 		F_EVENT   : integer := 6;
 		F_RUN     : integer := 6;        -- frames after the event
 		LOGFILE   : string  := "a.log";
@@ -50,7 +53,7 @@ architecture sim of tb is
 	signal req_save, req_load : std_logic := '0';
 	signal hold     : integer range 0 to 255 := 0;
 
-	type ddr_t is array(0 to 16#7FFF#) of std_logic_vector(63 downto 0);
+	type ddr_t is array(0 to 16#1FFFF#) of std_logic_vector(63 downto 0);
 	shared variable ddr : ddr_t;
 
 	signal frame      : integer := 0;
@@ -63,7 +66,32 @@ architecture sim of tb is
 	signal cpu_a : std_logic_vector(20 downto 0);
 	signal cpu_do, cpu_di : std_logic_vector(7 downto 0);
 	signal sgx        : std_logic;
+	signal cd         : std_logic;
+	signal cd_data    : std_logic_vector(7 downto 0) := x"00";
+	signal cd_data_wr, cd_stat_get : std_logic := '0';
+	constant SLOTSIZE : integer := 16#7FFF# + CDMODE * 16#B000#;
 begin
+	cd <= '1' when CDMODE /= 0 else '0';
+
+	-- data and status from the drive, at fixed core times
+	process(clk)
+		variable n : integer := 0;
+	begin
+		if rising_edge(clk) then
+			cd_data_wr <= '0';
+			cd_stat_get <= '0';
+			if CDMODE /= 0 and freeze = '0' then
+				if coretime >= T_DATA and n < 64 then
+					if (coretime mod 8) = 0 then
+						cd_data <= std_logic_vector(to_unsigned(n * 37 + 11, 8));
+						cd_data_wr <= '1';
+						n := n + 1;
+					end if;
+				end if;
+				if coretime = T_STAT then cd_stat_get <= '1'; end if;
+			end if;
+		end if;
+	end process;
 
 	sgx <= '1' when SGXMODE /= 0 else '0';
 
@@ -110,10 +138,10 @@ begin
 		GG_EN => '0', GG_CODE => (others => '0'), GG_RESET => '0', GG_AVAIL => open,
 		SP64 => '0', SGX => sgx,
 		JOY_OUT => JOY_OUT, JOY_IN => "1111",
-		CD_EN => '0', CD_RAM_A => open, CD_RAM_DO => open, CD_RAM_DI => x"FF", CD_RAM_RD => open, CD_RAM_WR => open, AC_EN => '0',
-		CD_STAT => x"00", CD_MSG => x"00", CD_STAT_GET => '0', CD_COMM => open, CD_COMM_SEND => open,
+		CD_EN => cd, CD_RAM_A => open, CD_RAM_DO => open, CD_RAM_DI => x"FF", CD_RAM_RD => open, CD_RAM_WR => open, AC_EN => '0',
+		CD_STAT => x"00", CD_MSG => x"00", CD_STAT_GET => cd_stat_get, CD_COMM => open, CD_COMM_SEND => open,
 		CD_DOUT_REQ => '0', CD_DOUT => open, CD_DOUT_SEND => open, CD_REGION => '0', CD_RESET => open,
-		CD_DATA => x"00", CD_DATA_WR => '0', CD_AUDIO_WR => '0', CD_SUBCD_WR => '0', CD_DATA_END => open, CD_DM => '0',
+		CD_DATA => cd_data, CD_DATA_WR => cd_data_wr, CD_AUDIO_WR => '0', CD_SUBCD_WR => '0', CD_DATA_END => open, CD_DM => '0',
 		CDDA_SL => CDDA_SL, CDDA_SR => CDDA_SR, ADPCM_S => ADPCM_S, PSG_SL => PSG_SL, PSG_SR => PSG_SR,
 		BG_EN => '1', SPR_EN => '1', GRID_EN => "00", CPU_PAUSE_EN => '0',
 		BORDER_EN => '1', ReducedVBL => '0',
@@ -132,7 +160,7 @@ begin
 	port map (
 		clk => clk, restore => ss_restore, load_done => load_done, increaseSSHeaderCount => '1',
 		save => req_save, load => req_load, savestate_address => "11" & x"800000", savestate_busy => busy,
-		paused => ss_paused,
+		paused => ss_paused, cd_mode => cd,
 		BUS_Din => bus_din, BUS_Adr => bus_adr, BUS_wren => bus_wren, BUS_rst => bus_rst, BUS_Dout => bus_dout,
 		loading_savestate => loading, saving_savestate => saving, sleep_savestate => sleep,
 		Save_RAMAddr => mem_addr, Save_RAMRdEn => open, Save_RAMWrEn => mem_we, Save_RAMWriteData => mem_wd,
@@ -201,7 +229,7 @@ begin
 						readline(sf, l);
 						read(l, t);
 						t_event <= t;
-						for i in 0 to 16#7FFF# loop
+						for i in 0 to SLOTSIZE loop
 							exit when endfile(sf);
 							readline(sf, l);
 							hread(l, v);
@@ -226,7 +254,7 @@ begin
 				file_open(sf, STATEFILE, write_mode);
 				write(l, t_event);
 				writeline(sf, l);
-				for i in 0 to 16#7FFF# loop
+				for i in 0 to SLOTSIZE loop
 					hwrite(l, ddr(i));
 					writeline(sf, l);
 				end loop;
@@ -257,7 +285,7 @@ begin
 	process(clk)
 		file lf : text open write_mode is LOGFILE;
 		variable l : line;
-		variable sl, sr : signed(15 downto 0) := (others => '0');
+		variable sl, sr, ad : signed(15 downto 0) := (others => '0');
 		variable h : unsigned(31 downto 0) := (others => '0');
 		variable vs_old : std_logic := '0';
 	begin
@@ -271,6 +299,10 @@ begin
 					write(l, string'("R ")); write(l, coretime); write(l, string'(" "));
 					hwrite(l, "000" & cpu_a); write(l, string'(" ")); hwrite(l, cpu_di); writeline(lf, l);
 				end if;
+				if ADPCM_S /= ad then
+					write(l, string'("D ")); write(l, coretime); write(l, string'(" "));
+					hwrite(l, std_logic_vector(ADPCM_S)); writeline(lf, l);
+				end if;
 				if PSG_SL /= sl or PSG_SR /= sr then
 					write(l, string'("A ")); write(l, coretime); write(l, string'(" "));
 					hwrite(l, std_logic_vector(PSG_SL)); write(l, string'(" ")); hwrite(l, std_logic_vector(PSG_SR)); writeline(lf, l);
@@ -283,7 +315,7 @@ begin
 					h := (others => '0');
 				end if;
 			end if;
-			sl := PSG_SL; sr := PSG_SR;
+			sl := PSG_SL; sr := PSG_SR; ad := ADPCM_S;
 			vs_old := VIDEO_VS;
 		end if;
 	end process;

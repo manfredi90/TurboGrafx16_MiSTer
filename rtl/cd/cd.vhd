@@ -4,6 +4,8 @@ library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.STD_LOGIC_TEXTIO.all;
 use IEEE.NUMERIC_STD.ALL;
+library work;
+use work.pBus_savestates.all;
 
 entity cd is
 	port(
@@ -48,7 +50,23 @@ entity cd is
 		
 		CD_SL			: out signed(15 downto 0);
 		CD_SR			: out signed(15 downto 0);
-		AD_S			: out signed(15 downto 0)
+		AD_S			: out signed(15 downto 0);
+
+		-- savestates
+		FREEZE      : in  std_logic := '0';
+		SS_RESTORE  : in  std_logic := '0';
+		SS_FIFO_CLR : in  std_logic := '0';
+		SS_BUS_Din  : in  std_logic_vector(BUS_buswidth-1 downto 0) := (others => '0');
+		SS_BUS_Adr  : in  std_logic_vector(BUS_busadr-1 downto 0) := (others => '1');
+		SS_BUS_wren : in  std_logic := '0';
+		SS_BUS_rst  : in  std_logic := '0';
+		SS_BUS_Dout : out std_logic_vector(BUS_buswidth-1 downto 0);
+		SS_AD_SEL   : in  std_logic := '0';
+		SS_AD_A     : in  std_logic_vector(16 downto 0) := (others => '0');
+		SS_AD_D     : in  std_logic_vector(3 downto 0) := (others => '0');
+		SS_AD_WE    : in  std_logic := '0';
+		SS_AD_Q     : out std_logic_vector(3 downto 0);
+		SCSI_FIFO_RD: out std_logic
 	);
 end cd;
 
@@ -172,6 +190,8 @@ architecture rtl of cd is
 	signal FIFO_EMPTY 		: std_logic;
 	signal FIFO_RD_REQ		: std_logic;
 	signal FIFO_WR_REQ		: std_logic;
+	signal FIFO_RDREQ_G		: std_logic;
+	signal SUBCD_FIFO_RDREQ_G	: std_logic;
 	signal FIFO_D 				: std_logic_vector(31 downto 0);
 	signal FIFO_Q 				: std_logic_vector(31 downto 0);
 	signal FIFO_SCLR			: std_logic;
@@ -202,6 +222,15 @@ architecture rtl of cd is
 	signal FADE_CNT 			: unsigned(7 downto 0);
 	signal CDDA_FADE_VOL		: unsigned(10 downto 0);
 	signal ADPCM_FADE_VOL	: unsigned(10 downto 0);
+
+	-- savestates: 64..68 here, 69 the MSM5205, 70..73 the SCSI controller
+	type ss_regs_t is array(0 to 9) of std_logic_vector(63 downto 0);
+	signal SS_IN, SS_OUT, SS_DO : ss_regs_t;
+	signal SCSI_SS_IN, SCSI_SS_OUT : std_logic_vector(255 downto 0);
+	signal ADRAM_WE_A    : std_logic;
+	signal ADRAM_WE_B    : std_logic;
+	signal SCSI_RESET_N  : std_logic;
+	signal M5205_RST_N   : std_logic;
 
 begin
 
@@ -251,7 +280,7 @@ begin
 			ADPCM_READ_NIB <= '0';
 			M5205_D <= (others => '0');
 		elsif rising_edge( CLK ) then
-			if EN = '1' then
+			if EN = '1' and FREEZE = '0' then
 			if CPU_CE = '1' then
 				SCSI_SEL_N <= '1';
 				if REG_SEL = '1' and EXT_WR_N = '0' then
@@ -494,6 +523,57 @@ begin
 				end if;
 			end if;
 			end if;
+
+			if SS_RESTORE = '1' then
+				SCSI_DBI <= SS_IN(0)(7 downto 0);
+				SCSI_ACK_N <= SS_IN(0)(8);
+				SCSI_RST_N <= SS_IN(0)(9);
+				SCSI_SEL_N <= SS_IN(0)(10);
+				CD_DTD <= SS_IN(0)(11);
+				CD_DTR <= SS_IN(0)(12);
+				CD_SUBCD <= SS_IN(0)(13);
+				CH_SEL <= SS_IN(0)(14);
+				BRAM_LOCK <= SS_IN(0)(15);
+				CD_DTD_EN <= SS_IN(0)(16);
+				CD_DTR_EN <= SS_IN(0)(17);
+				CD_SUBCD_EN <= SS_IN(0)(18);
+				ADPCM_END_EN <= SS_IN(0)(19);
+				ADPCM_HALF_EN <= SS_IN(0)(20);
+				AUTO_ACK <= SS_IN(0)(21);
+				R1802_0 <= SS_IN(0)(22);
+				R1802_1 <= SS_IN(0)(23);
+				CDDA_VOL <= SS_IN(0)(39 downto 24);
+				CDDA_SAMPLE_OLD <= SS_IN(0)(40);
+				SUBCD_CE_OLD <= SS_IN(0)(41);
+				ADPCM_OFFS <= SS_IN(0)(57 downto 42);
+				ADPCM_FREQ <= SS_IN(0)(61 downto 58);
+				ADPCM_DMA_EN <= SS_IN(0)(62);
+				ADPCM_DMA_RUN <= SS_IN(0)(63);
+				ADPCM_LEN <= SS_IN(1)(16 downto 0);
+				ADPCM_RDADDR <= SS_IN(1)(33 downto 17);
+				ADPCM_WRADDR <= SS_IN(1)(50 downto 34);
+				ADPCM_CTRL <= SS_IN(1)(58 downto 51);
+				ADPCM_END <= SS_IN(1)(59);
+				ADPCM_HALF <= SS_IN(1)(60);
+				ADPCM_PLAY <= SS_IN(1)(61);
+				ADPCM_WRITE_PEND <= SS_IN(1)(62);
+				ADPCM_READ_PEND <= SS_IN(1)(63);
+				ADPCM_FADER <= SS_IN(2)(2 downto 0);
+				R180E_7_4 <= SS_IN(2)(6 downto 3);
+				R180F_7_4 <= SS_IN(2)(10 downto 7);
+				R180F_0 <= SS_IN(2)(11);
+				ADPCM_WRDATA <= SS_IN(2)(19 downto 12);
+				ADPCM_RDDATA <= SS_IN(2)(27 downto 20);
+				PLAY_READ_PEND <= SS_IN(2)(28);
+				DMA_WRITE_PEND <= SS_IN(2)(29);
+				ADPCM_WRITE_NIB <= SS_IN(2)(30);
+				ADPCM_READ_NIB <= SS_IN(2)(31);
+				M5205_D <= SS_IN(2)(35 downto 32);
+				SCSI_REQ_N_OLD <= SS_IN(2)(36);
+				SCSI_BSY_N_OLD <= SS_IN(2)(37);
+				SCSI_ACK_N_OLD <= SS_IN(2)(38);
+				CD_DATA_CNT <= unsigned(SS_IN(2)(49 downto 39));
+			end if;
 		end if;
 	end process;
 
@@ -585,9 +665,11 @@ begin
 	BRAM_EN <= not BRAM_LOCK or not EN;
 	CD_RESET <= not SCSI_RST_N;
 	
+	SCSI_RESET_N <= RST_N and SCSI_RST_N;
+
 	SCSI : entity work.SCSI
 	port map (
-		RESET_N		=> RST_N and SCSI_RST_N,-- and EN
+		RESET_N		=> SCSI_RESET_N,-- and EN
 		CLK			=> CLK,
 		
 		DBI			=> SCSI_DBI,
@@ -615,7 +697,14 @@ begin
 		
 		CD_DATA		=> CD_DATA,
 		CD_WR			=> CD_DATA_WR,
-		CD_DATA_END	=> CD_DATA_END
+		CD_DATA_END	=> CD_DATA_END,
+
+		FREEZE      => FREEZE,
+		SS_RESTORE  => SS_RESTORE,
+		SS_FIFO_CLR => SS_FIFO_CLR,
+		SS_IN       => SCSI_SS_IN,
+		SS_OUT      => SCSI_SS_OUT,
+		FIFO_RD     => SCSI_FIFO_RD
 	);
 
 
@@ -627,7 +716,7 @@ begin
 			DRAM_CLKEN <= '0';
 			DRAM_SLOT_CNT <= (others => '0');
 		elsif rising_edge(CLK) then
-			if EN = '1' then
+			if EN = '1' and FREEZE = '0' then
 				DRAM_CLKEN <= '0';
 				DRAM_CLK_CNT <= DRAM_CLK_CNT + 1;
 				if DRAM_CLK_CNT = 18-1 then
@@ -638,6 +727,11 @@ begin
 				if DRAM_CLKEN = '1' then
 					DRAM_SLOT_CNT <= DRAM_SLOT_CNT + 1;
 				end if;
+			end if;
+			if SS_RESTORE = '1' then
+				DRAM_CLK_CNT <= unsigned(SS_IN(2)(54 downto 50));
+				DRAM_CLKEN <= SS_IN(2)(55);
+				DRAM_SLOT_CNT <= unsigned(SS_IN(2)(57 downto 56));
 			end if;
 		end if;
 	end process;
@@ -657,9 +751,16 @@ begin
 		clock		=> CLK,
 		address_a=> ADRAM_A,
 		data_a	=> ADRAM_DI,
-		wren_a	=> ADRAM_WE,
-		q_a		=> ADRAM_DO
+		wren_a	=> ADRAM_WE_A,
+		q_a		=> ADRAM_DO,
+
+		address_b=> SS_AD_A,
+		data_b	=> SS_AD_D,
+		wren_b	=> ADRAM_WE_B,
+		q_b		=> SS_AD_Q
 	);
+	ADRAM_WE_A <= ADRAM_WE and not FREEZE;
+	ADRAM_WE_B <= SS_AD_SEL and SS_AD_WE;
 	ADRAM_A <= ADPCM_WRADDR when DRAM_SLOT = SLOT_WRITE else ADPCM_RDADDR;
 	ADRAM_DI <= ADPCM_WRDATA(3 downto 0) when ADPCM_WRITE_NIB = '1' else ADPCM_WRDATA(7 downto 4);
 	ADRAM_WE <= DRAM_CLKEN when DRAM_SLOT = SLOT_WRITE and (ADPCM_WRITE_PEND = '1' or DMA_WRITE_PEND = '1') else '0';
@@ -671,6 +772,7 @@ begin
 			M5205_CLK_CNT <= 0;
 			M5205_CLK <= '0';
 		elsif rising_edge(CLK) then
+			if FREEZE = '0' then
 			M5205_CLK <= '0';
 			if EN = '1' then
 				if ADPCM_CE = '1' then
@@ -682,12 +784,19 @@ begin
 					end if;
 				end if;
 			end if;
+			end if;
+			if SS_RESTORE = '1' then
+				M5205_CLK <= SS_IN(2)(58);
+				M5205_CLK_CNT <= to_integer(unsigned(SS_IN(3)(8 downto 0)));
+			end if;
 		end if;
 	end process;
 	
+	M5205_RST_N <= not ADPCM_CTRL(7) and ADPCM_PLAY and EN;
+
 	MSM5205 : entity work.MSM5205
 	port map (
-		RST_N		=> not ADPCM_CTRL(7) and ADPCM_PLAY and EN,
+		RST_N		=> M5205_RST_N,
 		CLK		=> CLK,
 		
 		XTI		=> M5205_CLK,
@@ -695,7 +804,12 @@ begin
 		VCK_R		=> M5205_VCK_R,
 		--VCK_F		=> M5205_VCK_F,
 		
-		SOUT		=> M5205_SOUT
+		SOUT		=> M5205_SOUT,
+
+		FREEZE     => FREEZE,
+		SS_RESTORE => SS_RESTORE,
+		SS_IN      => SS_IN(5),
+		SS_OUT     => SS_OUT(5)
 	);
 
 	
@@ -711,7 +825,7 @@ begin
 			FIFO_WR_REQ <= '0';
 			if EN = '1' then
 				CD_WR_OLD <= CD_AUDIO_WR;
-				if DM = '1' then
+				if DM = '1' or SS_FIFO_CLR = '1' then
 					CD_BYTE_CNT <= (others => '0');
 				elsif CD_AUDIO_WR = '1' and CD_WR_OLD = '0' then
 					CD_BYTE_CNT <= CD_BYTE_CNT + 1;
@@ -730,6 +844,9 @@ begin
 		end if;
 	end process;
 	
+	FIFO_RDREQ_G <= FIFO_RD_REQ and not FREEZE;
+	SUBCD_FIFO_RDREQ_G <= SUBCD_FIFO_RD_REQ and not FREEZE;
+
 	FIFO : entity work.CDDA_FIFO 
 	port map(
 		clock		=> CLK,
@@ -737,7 +854,7 @@ begin
 		wrreq		=> FIFO_WR_REQ,
 		full		=> FIFO_FULL,
 		sclr		=> FIFO_SCLR,
-		rdreq		=> FIFO_RD_REQ,
+		rdreq		=> FIFO_RDREQ_G,
 		empty		=> FIFO_EMPTY,
 		q			=> FIFO_Q
 	);
@@ -748,7 +865,8 @@ begin
 		RST_N       => RST_N,		
 		IN_CLK   	=> 429545,
 		OUT_CLK   	=> 441,
-		CE   			=> CDDA_CE
+		CE   			=> CDDA_CE,
+		FREEZE      => FREEZE
 	);
 
 	ADPCM_CLK_GEN : entity work.CEGen
@@ -757,7 +875,8 @@ begin
 		RST_N       => RST_N,
 		IN_CLK      => 42954545,
 		OUT_CLK     => 1540200,
-		CE          => ADPCM_CE
+		CE          => ADPCM_CE,
+		FREEZE      => FREEZE
 	);
 	
 	--CD SUBCODE
@@ -788,7 +907,7 @@ begin
 		wrreq		=> SUBCD_FIFO_WR_REQ,
 		full		=> SUBCD_FIFO_FULL,
 		sclr		=> SUBCD_FIFO_SCLR,
-		rdreq		=> SUBCD_FIFO_RD_REQ,
+		rdreq		=> SUBCD_FIFO_RDREQ_G,
 		empty		=> SUBCD_FIFO_EMPTY,
 		q			=> SUBCD_FIFO_Q
 	);
@@ -808,6 +927,7 @@ begin
 			SUBCD_FIFO_RD_REQ <= '0';
 
 		elsif rising_edge(CLK) then
+			if FREEZE = '0' then
 			FIFO_RD_REQ <= '0';
 			FIFO_SCLR <= '0';
 			SUBCD_FIFO_RD_REQ <= '0';
@@ -859,6 +979,22 @@ begin
 				end if;
 
 			end if;
+			end if;
+			if SS_RESTORE = '1' then
+				OUTL <= signed(SS_IN(3)(24 downto 9));
+				OUTR <= signed(SS_IN(3)(40 downto 25));
+				SUBCD_CE <= SS_IN(3)(41);
+				SUBCD_CNT <= unsigned(SS_IN(3)(45 downto 42));
+				SUBCD_BYTE <= SS_IN(3)(53 downto 46);
+				SUBCD_BYTENUM <= unsigned(SS_IN(3)(61 downto 54));
+				CDDA_SAMPLE <= SS_IN(3)(62);
+				FIFO_RD_REQ <= '0';
+				SUBCD_FIFO_RD_REQ <= '0';
+			end if;
+			if SS_FIFO_CLR = '1' then
+				FIFO_SCLR <= '1';
+				SUBCD_FIFO_SCLR <= '1';
+			end if;
 		end if;
 	end process;
 
@@ -870,7 +1006,7 @@ begin
 			FADE_VOL <= "01111111111";
 			FADE_CNT <= (others => '0');
 		elsif rising_edge(CLK) then
-			if CDDA_CE = '1' and EN = '1' then
+			if CDDA_CE = '1' and EN = '1' and FREEZE = '0' then
 				if FADE_VOL(9 downto 0) > 0 and ADPCM_FADER(2) = '1' then
 					FADE_CNT <= FADE_CNT + 1;
 					if (FADE_CNT = 107 and ADPCM_FADER(1) = '1') or 	--2.5s
@@ -882,6 +1018,10 @@ begin
 					FADE_VOL <= "01111111111";
 				end if;
 			end if;
+			if SS_RESTORE = '1' then
+				FADE_VOL <= unsigned(SS_IN(4)(10 downto 0));
+				FADE_CNT <= unsigned(SS_IN(4)(18 downto 11));
+			end if;
 		end if;
 	end process;
 	
@@ -892,5 +1032,40 @@ begin
 	CD_SR <= OUTR;
 
 	AD_S <= x"0000" when ADPCM_PLAY = '0' else resize(shift_right(M5205_SOUT * signed(ADPCM_FADE_VOL), 10), AD_S'length);
+
+	-- savestates
+	SS_OUT(0) <= ADPCM_DMA_RUN & ADPCM_DMA_EN & ADPCM_FREQ & ADPCM_OFFS & SUBCD_CE_OLD & CDDA_SAMPLE_OLD & CDDA_VOL &
+	             R1802_1 & R1802_0 & AUTO_ACK & ADPCM_HALF_EN & ADPCM_END_EN & CD_SUBCD_EN & CD_DTR_EN & CD_DTD_EN &
+	             BRAM_LOCK & CH_SEL & CD_SUBCD & CD_DTR & CD_DTD & SCSI_SEL_N & SCSI_RST_N & SCSI_ACK_N & SCSI_DBI;
+	SS_OUT(1) <= ADPCM_READ_PEND & ADPCM_WRITE_PEND & ADPCM_PLAY & ADPCM_HALF & ADPCM_END & ADPCM_CTRL &
+	             ADPCM_WRADDR & ADPCM_RDADDR & ADPCM_LEN;
+	SS_OUT(2) <= "00000" & M5205_CLK & std_logic_vector(DRAM_SLOT_CNT) & DRAM_CLKEN & std_logic_vector(DRAM_CLK_CNT) &
+	             std_logic_vector(CD_DATA_CNT) & SCSI_ACK_N_OLD & SCSI_BSY_N_OLD & SCSI_REQ_N_OLD & M5205_D &
+	             ADPCM_READ_NIB & ADPCM_WRITE_NIB & DMA_WRITE_PEND & PLAY_READ_PEND & ADPCM_RDDATA & ADPCM_WRDATA &
+	             R180F_0 & R180F_7_4 & R180E_7_4 & ADPCM_FADER;
+	SS_OUT(3) <= '0' & CDDA_SAMPLE & std_logic_vector(SUBCD_BYTENUM) & SUBCD_BYTE & std_logic_vector(SUBCD_CNT) & SUBCD_CE &
+	             std_logic_vector(OUTR) & std_logic_vector(OUTL) & std_logic_vector(to_unsigned(M5205_CLK_CNT, 9));
+	SS_OUT(4) <= (63 downto 19 => '0') & std_logic_vector(FADE_CNT) & std_logic_vector(FADE_VOL);
+
+	SS_OUT(6) <= SCSI_SS_OUT(63 downto 0);
+	SS_OUT(7) <= SCSI_SS_OUT(127 downto 64);
+	SS_OUT(8) <= SCSI_SS_OUT(191 downto 128);
+	SS_OUT(9) <= SCSI_SS_OUT(255 downto 192);
+	SCSI_SS_IN <= SS_IN(9) & SS_IN(8) & SS_IN(7) & SS_IN(6);
+
+	gSS: for i in 0 to 9 generate
+		iREG : entity work.eReg_SavestateV generic map (64 + i, (others => '0'))
+		port map (CLK, SS_BUS_Din, SS_BUS_Adr, SS_BUS_wren, SS_BUS_rst, SS_DO(i), SS_OUT(i), SS_IN(i));
+	end generate;
+
+	process(SS_DO)
+		variable v : std_logic_vector(63 downto 0);
+	begin
+		v := (others => '0');
+		for i in 0 to 9 loop
+			v := v or SS_DO(i);
+		end loop;
+		SS_BUS_Dout <= v;
+	end process;
 
 end rtl;

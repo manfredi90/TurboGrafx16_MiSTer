@@ -13,12 +13,15 @@ entity ARCADE_CARD is
 		DO      : out std_logic_vector(7 downto 0);
 		SEL_N   : out std_logic;
 		RAM_CS_N: out std_logic;
-		RAM_A   : out std_logic_vector(20 downto 0)
+		RAM_A   : out std_logic_vector(20 downto 0);
+		SS_RESTORE : in  std_logic;
+		SS_IN   : in  std_logic_vector(319 downto 0);
+		SS_OUT  : out std_logic_vector(319 downto 0)
 	);
 end entity;
 architecture sim of ARCADE_CARD is
 begin
-	DO <= x"FF"; SEL_N <= '1'; RAM_CS_N <= '1'; RAM_A <= (others => '0');
+	DO <= x"FF"; SEL_N <= '1'; RAM_CS_N <= '1'; RAM_A <= (others => '0'); SS_OUT <= (others => '0');
 end architecture;
 
 library ieee;

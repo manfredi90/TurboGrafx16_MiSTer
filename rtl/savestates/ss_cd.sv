@@ -21,14 +21,13 @@
 //  is larger with the Arcade Card, whose 2 MB of RAM go in the state too.
 //============================================================================
 
-module ss_cd #(parameter [27:0] GAP = 28'd1288000, parameter [27:0] REFILL = 28'd85900000)
+module ss_cd #(parameter [27:0] GAP = 28'd2147000, parameter [27:0] REFILL = 28'd85900000)
 (
 	input             clk,
 	input             reset,
 
 	input             cd_mode,
 	input             ac_mode,
-	input             core_ddr,       // the core uses DDR3 (no SDRAM)
 
 	// requests
 	input             save,
@@ -82,6 +81,7 @@ module ss_cd #(parameter [27:0] GAP = 28'd1288000, parameter [27:0] REFILL = 28'
 	input       [7:0] byte_val,
 	output            drop,           // do not give it to the core
 	input             scsi_rd,        // the SCSI controller reads its FIFO (rising edge)
+	input             scsi_reset,     // the CPU resets the SCSI controller: its FIFO is emptied
 
 	// DDR3 buffer, through ss_ddram
 	output reg        ddr_owner,
@@ -125,7 +125,7 @@ localparam [7:0] I_SAVED = 14, I_LOADED = 15, I_EMPTY = 16, I_FAILED = 17;
 
 localparam [1:0] DRV_IDLE = 0, DRV_READ = 1, DRV_PLAY = 2, DRV_PAUSE = 3;
 
-// GAP: 30 ms between commands to Main, REFILL: 2 s for the sector being read to come again
+// GAP: 50 ms between commands to Main, REFILL: 2 s for the sector being read to come again
 
 localparam [7:0] MODE_LOOP = 8'h01, MODE_INT = 8'h02;
 
@@ -243,8 +243,12 @@ always @(posedge clk) begin
 	if (dataout_ev) dout_sent <= 1;
 
 	if (reset_ev) begin
-		drv      <= DRV_IDLE;
-		awaiting <= 0;
+		drv         <= DRV_IDLE;
+		awaiting    <= 0;
+		rd_cnt      <= 0;
+		sapep_valid <= 0;
+		sub_valid   <= 0;
+		paused_da   <= 0;
 	end
 
 	// statuses: dropped, or given to the core while it runs
@@ -300,6 +304,11 @@ always @(posedge clk) begin
 		end
 	end
 	fifo_cnt <= fifo_cnt + (byte_wr && pkt_ch == 2'd1 && !drop) - (scsi_rd && !old_rd);
+	if (scsi_reset) begin
+		fifo_cnt <= 0;
+		pkt_rd   <= 0;
+		pkt_size <= 0;
+	end
 
 	// subcode
 	if (pkt_hdr && pkt_ch == 2'd3) q <= 0;
@@ -307,7 +316,8 @@ always @(posedge clk) begin
 		q <= {q[94:0], byte_val[6]};
 		if (byte_idx == 97) q_done <= 1;
 	end
-	if (q_done && q[91:88] == 4'd1 && (drv == DRV_PLAY || (drv == DRV_PAUSE && paused_da))) begin
+	// not while the drive is put back: it goes through other positions
+	if (q_done && q[91:88] == 4'd1 && (drv == DRV_PLAY || (drv == DRV_PAUSE && paused_da)) && !block_out) begin
 		sub_lba   <= (q_lba < 150) ? 19'd0 : q_lba[18:0] - 19'd150;
 		sub_valid <= 1;
 	end
@@ -385,16 +395,16 @@ always @(posedge clk) begin
 end
 
 //----------------------------------------------------------------------------
-// copy buffer: 4 KB, 8 blocks of the save file
+// copy buffer: 16 KB, 32 blocks of the save file
 
-reg  [10:0] buf_a;
+reg  [12:0] buf_a;
 reg  [15:0] buf_d;
 reg         buf_we;
 wire [15:0] buf_q;
 reg         zero_fill;
 wire [15:0] buf_qb;
 
-dpram #(11,16) copybuf
+dpram #(13,16) copybuf
 (
 	.clock(clk),
 	.address_a(buf_a),
@@ -402,7 +412,7 @@ dpram #(11,16) copybuf
 	.wren_a(buf_we),
 	.q_a(buf_q),
 
-	.address_b(sd_buff_addr[10:0]),
+	.address_b(sd_buff_addr),
 	.data_b(sd_buff_dout),
 	.wren_b(sd_act & sd_buff_wr & sd_ack),
 	.q_b(buf_qb)
@@ -442,7 +452,7 @@ state_t     st, st_ret;
 reg  [31:0] slot_lba;
 reg  [31:0] total_lbas;
 reg  [31:0] lba_n;       // blocks done
-reg   [8:0] q_n;         // 64-bit words of the buffer done
+reg  [10:0] q_n;         // 64-bit words of the buffer done
 reg   [2:0] c;
 reg  [27:0] wait_cnt;
 reg  [27:0] since_inj;   // time since the last command to Main
@@ -462,6 +472,11 @@ wire  [7:0] sp_mode   = (drv == DRV_PAUSE) ? 8'h00 : sapsp[15:8];
 wire [95:0] sapsp_pos = {48'd0, sub_lba[7:0], sub_lba[15:8], 5'd0, sub_lba[18:16], 8'h00, sp_mode, 8'hD8};
 wire [95:0] sapsp_org = {sapsp[95:16], sp_mode, 8'hD8};
 wire        use_pos   = sub_valid && (drv == DRV_PAUSE ? paused_da : play_mode != MODE_LOOP);
+// a loop restarts from the position of SAPSP: that goes to the loop start, then a read
+// of one sector of the audio track moves the head to where the music was
+wire        loop_pos  = sub_valid && drv == DRV_PLAY && play_mode == MODE_LOOP;
+wire [95:0] read_pos  = {56'd0, 8'd1, sub_lba[7:0], sub_lba[15:8], 5'd0, sub_lba[18:16], 8'h08};
+wire [95:0] sapep_end = {16'd0, 8'h80, 48'd0, 8'h99, MODE_LOOP, 8'hD9};   // up to the end of the disc
 wire [20:0] rl        = res_partial ? rd_lba - 1'd1 : rd_lba;
 wire  [8:0] rc        = res_partial ? rd_cnt + 1'd1 : rd_cnt;
 wire [20:0] rl_last   = rd_lba - 1'd1;
@@ -507,8 +522,8 @@ always @(posedge clk) begin
 
 		//------------------------------------------------------------------ save
 		S_SV_ENG: begin
-			// without SDRAM the core needs DDR3 too: frozen until the copy is done
-			hold     <= core_ddr;
+			// the core stays frozen until the state is in the file
+			hold     <= 1;
 			eng_save <= 1;
 			wait_cnt <= 0;
 			st       <= S_SV_ENGWAIT;
@@ -543,14 +558,14 @@ always @(posedge clk) begin
 				zero_fill  <= 1;
 				sd_act     <= 1;
 				sd_lba     <= sav_lbas;
-				sd_blk_cnt <= (slot_lba - sav_lbas >= 8) ? 6'd7 : slot_lba[5:0] - sav_lbas[5:0] - 1'd1;
+				sd_blk_cnt <= (slot_lba - sav_lbas >= 32) ? 6'd31 : slot_lba[5:0] - sav_lbas[5:0] - 1'd1;
 				sd_wr      <= 1;
 				st_ret     <= S_SV_PAD;
 				st         <= S_SD_WAIT;
 			end
 		end
 
-		// 4 KB from DDR3 to the buffer, then to the file
+		// 16 KB from DDR3 to the buffer, then to the file
 		S_SV_FILL: begin
 			c <= c + 1'd1;
 			case (c)
@@ -567,7 +582,7 @@ always @(posedge clk) begin
 							if (&q_n) begin
 								sd_act     <= 1;
 								sd_lba     <= slot_lba + lba_n;
-								sd_blk_cnt <= 6'd7;
+								sd_blk_cnt <= 6'd31;
 								sd_wr      <= 1;
 								st_ret     <= S_SV_NEXT;
 								st         <= S_SD_WAIT;
@@ -579,8 +594,8 @@ always @(posedge clk) begin
 		end
 
 		S_SV_NEXT: begin
-			lba_n <= lba_n + 4'd8;
-			if (lba_n + 4'd8 >= total_lbas) begin
+			lba_n <= lba_n + 6'd32;
+			if (lba_n + 6'd32 >= total_lbas) begin
 				info <= I_SAVED;
 				st   <= S_DONE;
 			end
@@ -588,11 +603,11 @@ always @(posedge clk) begin
 		end
 
 		//------------------------------------------------------------------ load
-		// first 4 KB, with the header of the state
+		// first 16 KB, with the header of the state
 		S_LD_HDR: if (!bk_busy) begin
 			sd_act     <= 1;
 			sd_lba     <= slot_lba;
-			sd_blk_cnt <= 6'd7;
+			sd_blk_cnt <= 6'd31;
 			sd_rd      <= 1;
 			c          <= 0;
 			st_ret     <= S_LD_CHECK;
@@ -658,12 +673,12 @@ always @(posedge clk) begin
 		end
 
 		S_LD_NEXT: begin
-			lba_n <= lba_n + 4'd8;
-			if (lba_n + 4'd8 >= total_lbas) st <= S_LD_ENG;
+			lba_n <= lba_n + 6'd32;
+			if (lba_n + 6'd32 >= total_lbas) st <= S_LD_ENG;
 			else begin
 				sd_act     <= 1;
-				sd_lba     <= slot_lba + lba_n + 4'd8;
-				sd_blk_cnt <= 6'd7;
+				sd_lba     <= slot_lba + lba_n + 6'd32;
+				sd_blk_cnt <= 6'd31;
 				sd_rd      <= 1;
 				st_ret     <= S_LD_COPY;
 				st         <= S_SD_WAIT;
@@ -695,20 +710,26 @@ always @(posedge clk) begin
 			case (step)
 				// position of CD audio
 				0: if (drv == DRV_PLAY || drv == DRV_PAUSE) begin
-						inj_data  <= {fast, 15'd0, use_pos ? sapsp_pos : sapsp_org};
+						inj_data  <= {fast, 15'd0, use_pos ? sapsp_pos : loop_pos ? {sapsp[95:16], 8'h00, 8'hD8} : sapsp_org};
 						inj_req   <= 1;
 						since_inj <= 0;
 						if (!(awaiting && last_cmd[7:0] == 8'hD8)) set_swallow <= 1;
 					end
+				1: if (loop_pos) begin
+						inj_data    <= {fast, 15'd0, read_pos};
+						inj_req     <= 1;
+						since_inj   <= 0;
+						set_swallow <= 1;
+					end
 				// end of CD audio
-				1: if ((drv == DRV_PLAY && sapep_valid) || (awaiting && last_cmd[7:0] == 8'hD9)) begin
-						inj_data  <= {fast, 15'd0, sapep};
+				2: if ((drv == DRV_PLAY && sapep_valid) || (awaiting && last_cmd[7:0] == 8'hD9) || loop_pos) begin
+						inj_data  <= {fast, 15'd0, sapep_valid ? sapep : sapep_end};
 						inj_req   <= 1;
 						since_inj <= 0;
-						if (sapep[15:8] != MODE_INT && !(awaiting && last_cmd[7:0] == 8'hD9)) set_swallow <= 1;
+						if (play_mode != MODE_INT && !(awaiting && last_cmd[7:0] == 8'hD9)) set_swallow <= 1;
 					end
 				// sectors
-				2: if (last_cmd[7:0] == 8'h08 && (rd_cnt || res_partial || awaiting)) begin
+				3: if (last_cmd[7:0] == 8'h08 && (drv == DRV_READ || res_partial || awaiting)) begin
 						if (!rd_cnt && !res_partial) begin
 							// all sectors were sent, not the status: the last one again, unseen
 							inj_data   <= {fast, 15'd0, last_cmd[95:40], 8'd1, rl_last[7:0], rl_last[15:8], 3'd0, rl_last[20:16], 8'h08};
@@ -727,7 +748,7 @@ always @(posedge clk) begin
 						if (!awaiting) set_swallow <= 1;
 					end
 				// any other command waiting for its status, or whose answer was not all read
-				3: if (res_part_nr || (awaiting && last_cmd[7:0] != 8'h08 && last_cmd[7:0] != 8'hD8 && last_cmd[7:0] != 8'hD9)) begin
+				4: if (res_part_nr || (awaiting && last_cmd[7:0] != 8'h08 && last_cmd[7:0] != 8'hD8 && last_cmd[7:0] != 8'hD9)) begin
 						if (last_cmd[7:0] != 8'h15 || !dout_got) begin
 							inj_data   <= {fast, 15'd0, last_cmd};
 							inj_req    <= 1;

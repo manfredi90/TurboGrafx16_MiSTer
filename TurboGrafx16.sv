@@ -1495,7 +1495,6 @@ ss_cd ss_cd
 
 	.cd_mode      (cd_en),
 	.ac_mode      (status[14]),
-	.core_ddr     (~use_sdr),
 
 	.save         (ss_req_save & cd_en),
 	.load         (ss_req_load & cd_en),
@@ -1543,6 +1542,7 @@ ss_cd ss_cd
 	.byte_val     (!cd_dat_byte ? cd_dat[7:0] : cd_dat[15:8]),
 	.drop         (cd_drop),
 	.scsi_rd      (scsi_fifo_rd),
+	.scsi_reset   (cd_reset_req),
 
 	.ddr_owner    (cd_ddr_owner),
 	.ddr_adr      (cd_ddr_adr),

@@ -9,6 +9,7 @@ entity tb is
 	generic (
 		MODE      : integer := 0;        -- 0: plain run, 1: save at F_EVENT, 2: load at F_EVENT
 		ROMFILE   : string  := "rom/sstest.pce";
+		SGXMODE   : integer := 0;
 		F_EVENT   : integer := 6;
 		F_RUN     : integer := 6;        -- frames after the event
 		LOGFILE   : string  := "a.log";
@@ -38,7 +39,7 @@ architecture sim of tb is
 	signal bus_adr  : std_logic_vector(9 downto 0);
 	signal bus_wren, bus_rst : std_logic;
 	signal mem_addr : std_logic_vector(24 downto 0);
-	signal mem_type : unsigned(2 downto 0);
+	signal mem_type : unsigned(3 downto 0);
 	signal mem_we   : std_logic;
 	signal mem_wd, mem_rd : std_logic_vector(7 downto 0);
 	signal saving, loading, sleep, busy, load_done : std_logic;
@@ -61,7 +62,10 @@ architecture sim of tb is
 	signal freeze, cpu_ce, cpu_wr_n, cpu_rd_n : std_logic;
 	signal cpu_a : std_logic_vector(20 downto 0);
 	signal cpu_do, cpu_di : std_logic_vector(7 downto 0);
+	signal sgx        : std_logic;
 begin
+
+	sgx <= '1' when SGXMODE /= 0 else '0';
 
 	clk <= not clk after 5 ns;
 
@@ -104,7 +108,7 @@ begin
 		ROM_RD => ROM_RD, ROM_RDY => '1', ROM_A => ROM_A, ROM_DO => ROM_DO, ROM_SZ => x"002", ROM_POP => '0', ROM_CLKEN => ROM_CLKEN,
 		BRM_A => open, BRM_DI => open, BRM_DO => x"FF", BRM_WE => open,
 		GG_EN => '0', GG_CODE => (others => '0'), GG_RESET => '0', GG_AVAIL => open,
-		SP64 => '0', SGX => '0',
+		SP64 => '0', SGX => sgx,
 		JOY_OUT => JOY_OUT, JOY_IN => "1111",
 		CD_EN => '0', CD_RAM_A => open, CD_RAM_DO => open, CD_RAM_DI => x"FF", CD_RAM_RD => open, CD_RAM_WR => open, AC_EN => '0',
 		CD_STAT => x"00", CD_MSG => x"00", CD_STAT_GET => '0', CD_COMM => open, CD_COMM_SEND => open,
@@ -222,7 +226,7 @@ begin
 				file_open(sf, STATEFILE, write_mode);
 				write(l, t_event);
 				writeline(sf, l);
-				for i in 0 to 16#4200# loop
+				for i in 0 to 16#7FFF# loop
 					hwrite(l, ddr(i));
 					writeline(sf, l);
 				end loop;

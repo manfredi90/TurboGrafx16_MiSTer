@@ -1261,7 +1261,7 @@ wire  [1:0] ss_slot;
 reg         ss_rom_loaded = 0;
 always @(posedge clk_sys) if (cart_download) ss_rom_loaded <= 1;
 
-wire        ss_allow = ss_rom_loaded & ~cd_en & ~sgx;
+wire        ss_allow = ss_rom_loaded & ~cd_en;
 
 savestate_ui #(.INFO_TIMEOUT_BITS(25)) savestate_ui
 (
@@ -1290,7 +1290,7 @@ wire [63:0] ss_bus_din, ss_bus_dout, ss_core_dout, ss_input_dout, ss_id_dout;
 wire  [9:0] ss_bus_adr;
 wire        ss_bus_wren, ss_bus_rst;
 wire [24:0] ss_mem_addr;
-wire  [2:0] ss_mem_type;
+wire  [3:0] ss_mem_type;
 wire        ss_mem_we;
 wire  [7:0] ss_mem_wd, ss_mem_rd;
 wire [63:0] ss_ddr_din, ss_ddr_dout;
@@ -1373,7 +1373,7 @@ savestates savestates
 
 // 0: format id, 7: controller ports
 wire [63:0] ss_id_unused;
-eReg_SavestateV #(10'd0, 64'd0) ss_reg_id (clk_sys, ss_bus_din, ss_bus_adr, ss_bus_wren, ss_bus_rst, ss_id_dout, 64'h0000000131454350, ss_id_unused);
+eReg_SavestateV #(10'd0, 64'd0) ss_reg_id (clk_sys, ss_bus_din, ss_bus_adr, ss_bus_wren, ss_bus_rst, ss_id_dout, 64'h0000000231454350, ss_id_unused);
 
 wire [63:0] ss_input_in;
 eReg_SavestateV #(10'd7, 64'd0) ss_reg_input (clk_sys, ss_bus_din, ss_bus_adr, ss_bus_wren, ss_bus_rst, ss_input_dout,

@@ -21,6 +21,8 @@ library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.STD_LOGIC_UNSIGNED.ALL;
 use IEEE.NUMERIC_STD.ALL;
+library work;
+use work.pBus_savestates.all;
 
 entity huc6202 is
 	port (
@@ -40,7 +42,15 @@ entity huc6202 is
 
 		SGX		: in std_logic;
 
-		VDCNUM	: out std_logic
+		VDCNUM	: out std_logic;
+
+		-- savestates
+		SS_RESTORE  : in  std_logic := '0';
+		SS_BUS_Din  : in  std_logic_vector(BUS_buswidth-1 downto 0) := (others => '0');
+		SS_BUS_Adr  : in  std_logic_vector(BUS_busadr-1 downto 0) := (others => '1');
+		SS_BUS_wren : in  std_logic := '0';
+		SS_BUS_rst  : in  std_logic := '0';
+		SS_BUS_Dout : out std_logic_vector(BUS_buswidth-1 downto 0)
 	);
 end huc6202;
 
@@ -55,6 +65,10 @@ signal PRIN : std_logic_vector(1 downto 0);
 signal PRI  : std_logic_vector(3 downto 0);
 
 signal VDC_PRI		: std_logic_vector(8 downto 0);
+signal VDCNUM_R	: std_logic;
+
+signal SS_IN, SS_OUT : std_logic_vector(63 downto 0);
+constant PRI_INIT : std_logic_vector(7 downto 0) := "00010001";
 
 begin
 
@@ -101,6 +115,9 @@ begin
 
 			VDC_OUT <= VDCDATA;
 		end if;
+		if SS_RESTORE = '1' then
+			X <= SS_IN(35 downto 26);
+		end if;
 	end if;
 end process;
 
@@ -111,7 +128,7 @@ process( CLK ) begin
 			PRI1 <= "00010001";
 			WIN1 <= (others => '0');
 			WIN2 <= (others => '0');
-			VDCNUM <= '0';
+			VDCNUM_R <= '0';
 			DO <= X"FF";
 		else
 			if WR_N = '0' then
@@ -122,7 +139,7 @@ process( CLK ) begin
 					when "011" => WIN1(9 downto 8) <= DI(1 downto 0);
 					when "100" => WIN2(7 downto 0) <= DI;
 					when "101" => WIN2(9 downto 8) <= DI(1 downto 0);
-					when "110" => VDCNUM <= DI(0);
+					when "110" => VDCNUM_R <= DI(0);
 					when others => null;
 				end case;
 			end if;
@@ -136,7 +153,23 @@ process( CLK ) begin
 				when others => DO <= X"00";
 			end case;
 		end if;
+		if SS_RESTORE = '1' then
+			PRI0 <= SS_IN(7 downto 0) xor PRI_INIT;
+			PRI1 <= SS_IN(15 downto 8) xor PRI_INIT;
+			WIN1 <= SS_IN(25 downto 16);
+			WIN2 <= SS_IN(45 downto 36);
+			VDCNUM_R <= SS_IN(46);
+		end if;
 	end if;
 end process;
+
+VDCNUM <= VDCNUM_R;
+
+-- savestates: the priorities are stored relative to their reset value, so a state
+-- without this register (older HuCard states) restores the reset priorities
+SS_OUT <= (63 downto 47 => '0') & VDCNUM_R & WIN2 & X & WIN1 & (PRI1 xor PRI_INIT) & (PRI0 xor PRI_INIT);
+
+iREG : entity work.eReg_SavestateV generic map (26, (others => '0'))
+port map (CLK, SS_BUS_Din, SS_BUS_Adr, SS_BUS_wren, SS_BUS_rst, SS_BUS_Dout, SS_OUT, SS_IN);
 
 end rtl;

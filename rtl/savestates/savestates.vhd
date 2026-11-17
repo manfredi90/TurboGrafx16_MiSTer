@@ -46,7 +46,7 @@ entity savestates is
       Save_RAMWrEn            : out    std_logic := '0';
       Save_RAMWriteData       : out    std_logic_vector(7 downto 0) := (others => '0');
       Save_RAMReadData        : in     std_logic_vector(7 downto 0);
-      Save_RAMType            : out    unsigned(2 downto 0);
+      Save_RAMType            : out    unsigned(3 downto 0);
 
       bus_out_Din             : out    std_logic_vector(63 downto 0) := (others => '0');
       bus_out_Dout            : in     std_logic_vector(63 downto 0);
@@ -66,7 +66,7 @@ architecture arch of savestates is
    constant HEADERCOUNT    : integer := 2;
    constant INTERNALSCOUNT : integer := 64;
 
-   constant SAVETYPESCOUNT : integer := 6;
+   constant SAVETYPESCOUNT : integer := 8;
    signal savetype_counter : integer range 0 to SAVETYPESCOUNT;
 
    type save_type is record
@@ -82,11 +82,13 @@ architecture arch of savestates is
       (0,   512),  -- 2: SAT
       (0,  1024),  -- 3: colour RAM
       (0,   256),  -- 4: PSG waveforms
-      (0, 32768)   -- 5: Populous RAM
+      (0, 32768),  -- 5: Populous RAM
+      (0, 65536),  -- 6: VRAM of the second VDC (SuperGrafx)
+      (0,   512)   -- 7: SAT of the second VDC (SuperGrafx)
    );
 
    -- 32-bit words after the header: registers, then memories
-   constant STATESIZE      : integer := INTERNALSCOUNT * 2 + (32768 + 65536 + 512 + 1024 + 256 + 32768) / 4;
+   constant STATESIZE      : integer := INTERNALSCOUNT * 2 + (32768 + 65536 + 512 + 1024 + 256 + 32768 + 65536 + 512) / 4;
    -- smallest size accepted on load: the registers alone
    constant MINSIZE        : integer := INTERNALSCOUNT * 2;
    -- largest size that fits in a slot (256 KB)
@@ -206,7 +208,7 @@ begin
                   Save_RAMAddr   <= std_logic_vector(to_unsigned(savetypes(savetype_counter).OFFSET, Save_RAMAddr'length));
                   Save_RAMRdEn   <= '1';
                   memory_slow    <= (others => '0');
-                  Save_RAMType   <= to_unsigned(savetype_counter, 3);
+                  Save_RAMType   <= to_unsigned(savetype_counter, 4);
                else
                   state          <= SAVESIZEAMOUNT;
                   bus_out_Adr    <= savestate_address;
@@ -319,7 +321,7 @@ begin
                      RAMAddrNext    <= std_logic_vector(to_unsigned(savetypes(savetype_counter).OFFSET, Save_RAMAddr'length));
                      bytecounter    <= 0;
                      bus_out_ena    <= '1';
-                     Save_RAMType   <= to_unsigned(savetype_counter, 3);
+                     Save_RAMType   <= to_unsigned(savetype_counter, 4);
                   else
                      state             <= IDLE;
                      loading_savestate <= '0';

@@ -21,7 +21,7 @@ for f in $R/savestates/bus_savestates.vhd $R/savestates/savestates.vhd $R/dpram.
          $R/HUC6280/HUC6280_PKG.vhd $R/HUC6280/AddSubBCD.vhd $R/HUC6280/HUC6280_ALU.vhd $R/HUC6280/HUC6280_AG.vhd \
          $R/HUC6280/HUC6280_MC.vhd $R/HUC6280/HUC6280_CPU.vhd $R/HUC6280/psg.vhd $R/HUC6280/HUC6280.vhd \
          work/huc6270_sim.vhd $R/huc6260.vhd $R/huc6202.vhd $R/CEGen.vhd work/fifo_stubs.vhd \
-         $R/cd/MSM5205.vhd $R/cd/SCSI.vhd $R/cd/cd.vhd stubs.vhd work/pce_top_sim.vhd tb.vhd; do
+         work/MSM5205_sim.vhd work/SCSI_sim.vhd work/cd_sim.vhd stubs.vhd work/pce_top_sim.vhd tb.vhd; do
   $GHDL -a $GHDLOPT $F $f 2>&1 | grep -i "error" || true
 done
 $GHDL -e $GHDLOPT $F tb 2>&1 | grep -i "error" || true

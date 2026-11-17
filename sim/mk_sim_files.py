@@ -43,6 +43,19 @@ end architecture;
 '''
 open(os.path.join(here, 'work', 'fifo_stubs.vhd'), 'w').write('\n'.join(out))
 
+# registers of the CD unit start at 0, as in the FPGA, instead of 'U'
+def init_zero(src, dst):
+    s = open(src).read()
+    def rep(m):
+        decl, typ = m.group(1), m.group(2)
+        if re.match(r'(?i)std_logic\s*$', typ): return decl + " := '0';"
+        if re.match(r'(?i)(std_logic_vector|unsigned|signed)\s*\(', typ): return decl + " := (others => '0');"
+        return m.group(0)
+    s = re.sub(r'(?im)^(\s*signal\s+[\w\s,]+:\s*([^;:=]+?))\s*;', rep, s)
+    open(dst, 'w').write(s)
+for n in ['cd/cd.vhd', 'cd/SCSI.vhd', 'cd/MSM5205.vhd']:
+    init_zero(os.path.join(R, n), os.path.join(here, 'work', os.path.basename(n).replace('.vhd', '_sim.vhd')))
+
 s = open(os.path.join(R, 'huc6270.vhd')).read()
 s = s.replace("(others=>'0'),'0',\"00\",'0','0',\"00\"", "(others=>'0'),'0',\"0000\",'0','0',\"00\"")
 s = s.replace('(559 downto 0)', '(1023 downto 0)')

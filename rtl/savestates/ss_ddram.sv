@@ -11,6 +11,9 @@ module ss_ddram
 	input             req,      // one clk_sys pulse
 	output reg        done,     // one clk_sys pulse
 	output reg [63:0] dout,
+	output            pending,  // a request is not done yet
+
+	output reg        sel = 0,  // DDR3 is used by this channel (DDRAM_CLK)
 
 	input             DDRAM_CLK,
 	input             DDRAM_BUSY,
@@ -31,7 +34,6 @@ reg  [7:0] r_be;
 reg        r_rnw;
 reg [63:0] r_dout;
 reg        ack_old = 0;
-reg        req_old = 0;
 reg        busy = 0;
 reg        wait_rd = 0;
 
@@ -57,14 +59,17 @@ assign DDRAM_ADDR     = {4'b0011, r_adr[25:1]};
 assign DDRAM_DIN      = r_din;
 assign DDRAM_BE       = DDRAM_RD ? 8'hFF : r_be;
 
+assign pending = req | (req_t ^ ack_old);
+
+// DDR3 is taken only for the time of a request, so the core can use it between them
 always @(posedge DDRAM_CLK) begin
-	req_old <= req_t;
+	sel <= busy | (req_t ^ ack_t);
 
 	if (!DDRAM_BUSY) begin
 		DDRAM_RD <= 0;
 		DDRAM_WE <= 0;
 
-		if (!busy && req_old != req_t) begin
+		if (!busy && (req_t ^ ack_t) && sel) begin
 			busy <= 1;
 			if (r_rnw) begin
 				DDRAM_RD <= 1;

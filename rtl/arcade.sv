@@ -30,7 +30,12 @@ module ARCADE_CARD
 	output        SEL_N,
 	
 	output        RAM_CS_N,
-	output [20:0] RAM_A
+	output [20:0] RAM_A,
+
+	// savestates
+	input         SS_RESTORE,
+	input [319:0] SS_IN,
+	output[319:0] SS_OUT
 );
 
 
@@ -111,9 +116,9 @@ end
 wire [3:0] rot = DI[3] ? (4'd8 - DI[2:0]) : DI[2:0];
 wire acc = ~(WR_N & RD_N);
 
-always @(posedge CLK) begin
-	reg old_acc;
+reg old_acc;
 
+always @(posedge CLK) begin
 	old_acc <= acc;
 
 	if(~RST_N) begin
@@ -177,6 +182,26 @@ always @(posedge CLK) begin
 			else port[p].offset <= port[p].offset + port[p].increment;
 		end
 	end
+
+	if(SS_RESTORE) begin
+		for(int i=0; i<4; i++) begin
+			port[i].base      <= SS_IN[i*64 +: 24];
+			port[i].offset    <= SS_IN[i*64+24 +: 16];
+			port[i].increment <= SS_IN[i*64+40 +: 16];
+			port[i].control   <= SS_IN[i*64+56 +: 7];
+		end
+		shift_latch <= SS_IN[256 +: 32];
+		shift_bits  <= SS_IN[288 +: 8];
+		rotate_bits <= SS_IN[296 +: 8];
+		ena         <= SS_IN[304];
+		old_acc     <= SS_IN[305];
+	end
 end
+
+assign SS_OUT = {14'd0, old_acc, ena, rotate_bits, shift_bits, shift_latch,
+                 1'b0, port[3].control, port[3].increment, port[3].offset, port[3].base,
+                 1'b0, port[2].control, port[2].increment, port[2].offset, port[2].base,
+                 1'b0, port[1].control, port[1].increment, port[1].offset, port[1].base,
+                 1'b0, port[0].control, port[0].increment, port[0].offset, port[0].base};
 
 endmodule

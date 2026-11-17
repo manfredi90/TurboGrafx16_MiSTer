@@ -12,7 +12,7 @@ if mode=='ac':
     n=min(len(a),len(c))
     for i in range(n):
         if a[i]!=c[i]:
-            print('A/C differ at', i, a[i], c[i]); break
+            print('A/C differ at', i, a[i], c[i]); sys.exit(1)
     else: print('A/C identical over', n, 'events, last t', a[n-1][1])
 else:
     a=load(sys.argv[2]); b=load(sys.argv[3])
@@ -32,3 +32,4 @@ else:
             bad=1; break
     if not bad: print('A/B identical over', n, 'events from t', t, 'to', a[n-1][1] if n else None)
     print('frames compared:', sum(1 for x in b[:n] if x[0]=='F'))
+    if bad or n == 0: sys.exit(1)

@@ -107,7 +107,9 @@ entity pce_top is
 		SS_MEM_ADDR	: in  std_logic_vector(16 downto 0) := (others => '0');
 		SS_MEM_WE	: in  std_logic := '0';
 		SS_MEM_WD	: in  std_logic_vector(7 downto 0) := (others => '0');
-		SS_MEM_RD	: out std_logic_vector(7 downto 0)
+		SS_MEM_RD	: out std_logic_vector(7 downto 0);
+		SS_FIFO_CLR	: in  std_logic := '0';
+		SCSI_FIFO_RD: out std_logic
 	);
 end pce_top;
 
@@ -238,6 +240,13 @@ signal SS_TOP_IN, SS_TOP_OUT : std_logic_vector(63 downto 0);
 signal SS_SEL_RAM, SS_SEL_VRAM, SS_SEL_SAT, SS_SEL_PAL, SS_SEL_WAVE, SS_SEL_PRAM : std_logic;
 signal SS_SEL_VRAM1, SS_SEL_SAT1 : std_logic;
 signal SS_VRAM1_Q, SS_SAT1_Q : std_logic_vector(15 downto 0);
+signal SS_CD_DO	: std_logic_vector(63 downto 0);
+signal SS_AC_DO	: std_logic_vector(63 downto 0);
+signal SS_AC_IN, SS_AC_OUT : std_logic_vector(319 downto 0);
+type ss_ac_t is array(0 to 4) of std_logic_vector(63 downto 0);
+signal SS_AC_DOS	: ss_ac_t;
+signal SS_SEL_AD	: std_logic;
+signal SS_AD_Q		: std_logic_vector(3 downto 0);
 signal VRAM1_AB	: std_logic_vector(14 downto 0);
 signal VRAM1_DB	: std_logic_vector(15 downto 0);
 signal VRAM1_WB	: std_logic;
@@ -279,7 +288,11 @@ component ARCADE_CARD is
 		SEL_N   : out std_logic;
 
 		RAM_CS_N: out std_logic;
-		RAM_A   : out std_logic_vector(20 downto 0)
+		RAM_A   : out std_logic_vector(20 downto 0);
+
+		SS_RESTORE : in  std_logic;
+		SS_IN   : in  std_logic_vector(319 downto 0);
+		SS_OUT  : out std_logic_vector(319 downto 0)
 	);
 end component;
 
@@ -822,7 +835,22 @@ port map(
 	
 	CD_SL			=> CDDA_SL,
 	CD_SR			=> CDDA_SR,
-	AD_S			=> ADPCM_S
+	AD_S			=> ADPCM_S,
+
+	FREEZE      => FREEZE,
+	SS_RESTORE  => SS_RESTORE,
+	SS_FIFO_CLR => SS_FIFO_CLR,
+	SS_BUS_Din  => SS_BUS_Din,
+	SS_BUS_Adr  => SS_BUS_Adr,
+	SS_BUS_wren => SS_BUS_wren,
+	SS_BUS_rst  => SS_BUS_rst,
+	SS_BUS_Dout => SS_CD_DO,
+	SS_AD_SEL   => SS_SEL_AD,
+	SS_AD_A     => SS_MEM_ADDR(16 downto 0),
+	SS_AD_D     => SS_MEM_WD(3 downto 0),
+	SS_AD_WE    => SS_MEM_WE,
+	SS_AD_Q     => SS_AD_Q,
+	SCSI_FIFO_RD=> SCSI_FIFO_RD
 );
 
 CD_RAM_A  <= '0' & AC_RAM_A when AC_RAM_CS_N = '0' else "1000" & CPU_A(17 downto 0);
@@ -844,8 +872,19 @@ port map(
 	SEL_N   => AC_SEL_N,
 
 	RAM_CS_N=> AC_RAM_CS_N,
-	RAM_A   => AC_RAM_A
+	RAM_A   => AC_RAM_A,
+
+	SS_RESTORE => SS_RESTORE,
+	SS_IN   => SS_AC_IN,
+	SS_OUT  => SS_AC_OUT
 );
+
+-- Arcade Card registers: savestate bus 75..79
+gSS_AC: for i in 0 to 4 generate
+	iREG : entity work.eReg_SavestateV generic map (75 + i, (others => '0'))
+	port map (CLK, SS_BUS_Din, SS_BUS_Adr, SS_BUS_wren, SS_BUS_rst, SS_AC_DOS(i), SS_AC_OUT(i*64+63 downto i*64), SS_AC_IN(i*64+63 downto i*64));
+end generate;
+SS_AC_DO <= SS_AC_DOS(0) or SS_AC_DOS(1) or SS_AC_DOS(2) or SS_AC_DOS(3) or SS_AC_DOS(4);
 
 PSG_SR <= signed(PCE_SR(23 downto 8));
 PSG_SL <= signed(PCE_SL(23 downto 8));
@@ -867,7 +906,7 @@ SS_TOP_OUT <= (63 downto 2 => '0') & rombank;
 iREG_TOP : entity work.eReg_SavestateV generic map (6, (others => '0'))
 port map (CLK, SS_BUS_Din, SS_BUS_Adr, SS_BUS_wren, SS_BUS_rst, SS_TOP_DO, SS_TOP_OUT, SS_TOP_IN);
 
-SS_BUS_Dout <= SS_CPU_DO or SS_VDC_DO or SS_VCE_DO or SS_TOP_DO or SS_VDC1_DO or SS_VPC_DO;
+SS_BUS_Dout <= SS_CPU_DO or SS_VDC_DO or SS_VCE_DO or SS_TOP_DO or SS_VDC1_DO or SS_VPC_DO or SS_CD_DO or SS_AC_DO;
 
 -- memories, in the order of the savestate table
 SS_SEL_RAM   <= SS_MEM_ACT when SS_MEM_TYPE = x"0" else '0';
@@ -878,6 +917,7 @@ SS_SEL_WAVE  <= SS_MEM_ACT when SS_MEM_TYPE = x"4" else '0';
 SS_SEL_PRAM  <= SS_MEM_ACT when SS_MEM_TYPE = x"5" else '0';
 SS_SEL_VRAM1 <= SS_MEM_ACT when SS_MEM_TYPE = x"6" else '0';
 SS_SEL_SAT1  <= SS_MEM_ACT when SS_MEM_TYPE = x"7" else '0';
+SS_SEL_AD    <= SS_MEM_ACT when SS_MEM_TYPE = x"9" else '0';
 
 -- 16-bit memories: the low byte is held until the high byte arrives
 process( CLK ) begin
@@ -901,6 +941,7 @@ SS_W16 <= SS_VRAM_Q              when SS_MEM_TYPE = x"1" else
           "0000000" & SS_PAL_Q;
 
 SS_MEM_RD <= SS_RAM_Q               when SS_MEM_TYPE = x"0" else
+             "0000" & SS_AD_Q       when SS_MEM_TYPE = x"9" else
              SS_PRAM_Q              when SS_MEM_TYPE = x"5" else
              "000" & SS_WAVE_Q      when SS_MEM_TYPE = x"4" else
              SS_W16(15 downto 8)    when SS_MEM_ADDR(0) = '1' else

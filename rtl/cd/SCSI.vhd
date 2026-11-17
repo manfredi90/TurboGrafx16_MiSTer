@@ -107,6 +107,9 @@ architecture rtl of SCSI is
 	signal DELAY_COUNT   : unsigned(16 downto 0);
 
 	signal FIFO_ACLR     : std_logic;
+	signal DBO_R         : std_logic_vector(7 downto 0);
+	signal CD_DATA_END_R : std_logic;
+	signal STOP_CD_SND_R : std_logic;
 	signal FIFO_RDREQ_G  : std_logic;
 	signal SS_SP         : std_logic_vector(3 downto 0);
 
@@ -194,7 +197,7 @@ begin
 
 	process( CLK, RESET_N ) begin
 		if RESET_N = '0' then
-			DBO <= (others => '0');
+			DBO_R <= (others => '0');
 			BSY_Nr <= '1';
 			MSG_Nr <= '1';
 			CD_Nr <= '1';
@@ -205,11 +208,11 @@ begin
 			DATA_BUF <= (others => (others => '0'));
 			DATA_POS <= (others => '0');
 			SP <= SP_FREE;
-			STOP_CD_SND <= '0';
+			STOP_CD_SND_R <= '0';
 			
 			COMM_OUT <= '0';
 			DATA_OUT <= '0';
-			CD_DATA_END <= '0';
+			CD_DATA_END_R <= '0';
 			STAT_PEND <= '0';
 			DOUT_PEND <= '0';
 			FIFO_RD_REQ <= '0';
@@ -232,7 +235,7 @@ begin
 
 			COMM_OUT <= '0';
 			DATA_OUT <= '0';
-			CD_DATA_END <= '0';
+			CD_DATA_END_R <= '0';
 			FIFO_RD_REQ <= '0';
 			
 			if RST_N = '0' then
@@ -260,7 +263,7 @@ begin
 																		-- the Sailor Moon hang issue
 								STAT_COUNT <= (others => '0');
 								STAT_PEND <= '0';
-								DBO <= STATUS;
+								DBO_R <= STATUS;
 								BSY_Nr <= '0';
 								MSG_Nr <= '1';
 								CD_Nr <= '0';
@@ -269,7 +272,7 @@ begin
 								SP <= SP_STAT_START;
 							end if;
 						elsif EMPTY = '0' then
-							DBO <= FIFO_Q;
+							DBO_R <= FIFO_Q;
 							BSY_Nr <= '0';
 							MSG_Nr <= '1';
 							CD_Nr <= '1';
@@ -311,10 +314,10 @@ begin
 								CD_Nr <= '1';
 								SP <= SP_FREE;
 								if ((COMM(0) = x"08") or (COMM(0) = x"DA")) then	-- READ6 and PAUSE commands should mute sound, but still drain FIFO
-									STOP_CD_SND <= '1';
+									STOP_CD_SND_R <= '1';
 								end if;
 								if ((COMM(0) = x"D8") or (COMM(0) = x"D9")) then	-- SAPSP and SAPEP commands should unmute sound (FIFO should be empty by now)
-									STOP_CD_SND <= '0';
+									STOP_CD_SND_R <= '0';
 								end if;
 							else
 								SP <= SP_COMM_BEFOREREQ;
@@ -336,7 +339,7 @@ begin
 
 					when SP_STAT_HOLD =>
 						if (DELAY_COUNT = 0) then
-							DBO <= MESSAGE;
+							DBO_R <= MESSAGE;
 							BSY_Nr <= '0';
 							MSG_Nr <= '0';
 							CD_Nr <= '0';
@@ -375,18 +378,18 @@ begin
 						if REQ_Nr = '0' and ACK_N = '0' then
 							REQ_Nr <= '1';
 							SP <= SP_DATAIN_END;
-							STOP_CD_SND <= '0';		-- unmute
+							STOP_CD_SND_R <= '0';		-- unmute
 						end if;
 					
 					when SP_DATAIN_END =>
 						if REQ_Nr = '1' and ACK_N = '1' then
 							if EMPTY = '0' then
-								DBO <= FIFO_Q;
+								DBO_R <= FIFO_Q;
 								REQ_Nr <= '0';
 								FIFO_RD_REQ <= '1';
 								SP <= SP_DATAIN_START;
 							else
-								CD_DATA_END <= '1';
+								CD_DATA_END_R <= '1';
 								SP <= SP_FREE;
 							end if;
 							DATAIN_CNT <= DATAIN_CNT + 1;
@@ -427,7 +430,7 @@ begin
 				end loop;
 				DATA_BUF(8) <= SS_IN(199 downto 192);
 				DATA_BUF(9) <= SS_IN(207 downto 200);
-				DBO <= SS_IN(103 downto 96);
+				DBO_R <= SS_IN(103 downto 96);
 				BSY_Nr <= SS_IN(104);
 				MSG_Nr <= SS_IN(105);
 				CD_Nr <= SS_IN(106);
@@ -436,10 +439,10 @@ begin
 				COMM_POS <= unsigned(SS_IN(112 downto 109));
 				DATA_POS <= unsigned(SS_IN(116 downto 113));
 				SP <= sp_phase(SS_IN(120 downto 117));
-				STOP_CD_SND <= SS_IN(121);
+				STOP_CD_SND_R <= SS_IN(121);
 				COMM_OUT <= SS_IN(122);
 				DATA_OUT <= SS_IN(123);
-				CD_DATA_END <= SS_IN(124);
+				CD_DATA_END_R <= SS_IN(124);
 				STAT_PEND <= SS_IN(125);
 				DOUT_PEND <= SS_IN(126);
 				STAT_COUNT <= unsigned(SS_IN(223 downto 208));
@@ -452,11 +455,14 @@ begin
 	SS_SP <= sp_code(SP);
 	SS_OUT <= (255 downto 241 => '0') & std_logic_vector(DELAY_COUNT) & std_logic_vector(STAT_COUNT) &
 	          DATA_BUF(9) & DATA_BUF(8) & DATA_BUF(7) & DATA_BUF(6) & DATA_BUF(5) & DATA_BUF(4) & DATA_BUF(3) & DATA_BUF(2) & DATA_BUF(1) & DATA_BUF(0) &
-	          '0' & DOUT_PEND & STAT_PEND & CD_DATA_END & DATA_OUT & COMM_OUT & STOP_CD_SND & SS_SP &
-	          std_logic_vector(DATA_POS) & std_logic_vector(COMM_POS) & REQ_Nr & IO_Nr & CD_Nr & MSG_Nr & BSY_Nr & DBO &
+	          '0' & DOUT_PEND & STAT_PEND & CD_DATA_END_R & DATA_OUT & COMM_OUT & STOP_CD_SND_R & SS_SP &
+	          std_logic_vector(DATA_POS) & std_logic_vector(COMM_POS) & REQ_Nr & IO_Nr & CD_Nr & MSG_Nr & BSY_Nr & DBO_R &
 	          COMM(11) & COMM(10) & COMM(9) & COMM(8) & COMM(7) & COMM(6) & COMM(5) & COMM(4) & COMM(3) & COMM(2) & COMM(1) & COMM(0);
 
 	FIFO_RD <= FIFO_RD_REQ;
+	DBO <= DBO_R;
+	CD_DATA_END <= CD_DATA_END_R;
+	STOP_CD_SND <= STOP_CD_SND_R;
 	FIFO_EMPTY <= EMPTY;
 	
 	BSY_N <= BSY_Nr;

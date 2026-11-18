@@ -754,19 +754,30 @@ IIR_filter #(
 	.output_l  (adpcm_filt)
 );
 
+// The outputs of the filters have 3 clocks (multicycle in the .sdc): they are taken
+// when they are stable, else with a full chip their late bits make clicks
+logic [15:0] adpcm_q, psg_l_q, psg_r_q;
+always @(posedge clk_sys) begin
+	reg [3:0] psg_ce_d, adpcm_ce_d;
+	psg_ce_d   <= {psg_ce_d[2:0], psg_ce};
+	adpcm_ce_d <= {adpcm_ce_d[2:0], adpcm_ce};
+	if (psg_ce_d[3])   {psg_l_q, psg_r_q} <= {psg_l_filt, psg_r_filt};
+	if (adpcm_ce_d[3]) adpcm_q <= adpcm_filt;
+end
+
 always @(posedge clk_sys) begin
 	reg [17:0] pre_l, pre_r;
 	reg signed [16:0] adpcm_boost;
-	adpcm_boost <= $signed({adpcm_filt[15], adpcm_filt}) + $signed((status[22] ? {{3{adpcm_filt[15]}}, adpcm_filt[15:2]} : 17'd0));
+	adpcm_boost <= $signed({adpcm_q[15], adpcm_q}) + $signed((status[22] ? {{3{adpcm_q[15]}}, adpcm_q[15:2]} : 17'd0));
 
 	pre_l <= ( CDDA_EN                  ? {{2{cdda_sl[15]}},         cdda_sl} : 18'd0)
 			 + ((CDDA_EN && status[20]) ? {{2{cdda_sl[15]}},         cdda_sl} : 18'd0)
-			 + ( PSG_EN                 ? {{2{psg_l_filt[15]}},   psg_l_filt} : 18'd0)
+			 + ( PSG_EN                 ? {{2{psg_l_q[15]}},      psg_l_q} : 18'd0)
 			 + ( ADPCM_EN               ? {adpcm_boost[16],   adpcm_boost} : 18'd0);
 
 	pre_r <= ( CDDA_EN                  ? {{2{cdda_sr[15]}},         cdda_sr} : 18'd0)
 			 + ((CDDA_EN && status[20]) ? {{2{cdda_sr[15]}},         cdda_sr} : 18'd0)
-			 + ( PSG_EN                 ? {{2{psg_r_filt[15]}},   psg_r_filt} : 18'd0)
+			 + ( PSG_EN                 ? {{2{psg_r_q[15]}},      psg_r_q} : 18'd0)
 			 + ( ADPCM_EN               ? {adpcm_boost[16],   adpcm_boost} : 18'd0);
 
 	if(~status[20]) begin

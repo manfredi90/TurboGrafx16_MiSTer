@@ -216,11 +216,11 @@ task automatic cmd_apply(input [95:0] c);
 			sub_valid   <= 0;
 			paused_da   <= 0;
 		end
+		// the position stays: SAPEP after PAUSE plays from where the head is
 		8'hD9: begin
 			drv         <= c[15:8] ? DRV_PLAY : DRV_IDLE;
 			sapep       <= c;
 			sapep_valid <= 1;
-			sub_valid   <= 0;
 		end
 		8'hDA: begin
 			if (drv == DRV_PLAY) paused_da <= 1;

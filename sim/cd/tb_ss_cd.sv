@@ -743,6 +743,24 @@ initial begin
 	`CHECK(m_state == ST_PLAY && m_lba >= 5 && m_lba <= 41, "9: still in the loop")
 	`CHECK(stats == 2, "9: no status")
 
+	//------------------------------------------------------------------ 10
+	$display("--- 10: PAUSE, then SAPEP alone goes on, save and load");
+	stats = 0;
+	core_cmd({88'd0, 8'hDA});                                          // pause the loop of test 9
+	wait (stats == 1);
+	core_cmd({48'd0, 8'd60, 8'd0, 8'd0, 8'd0, 8'h03, 8'hD9});          // play on to lba 60
+	wait (stats == 2);
+	run(3 * TICK);
+	g = m_lba;
+	do_save(1);
+	$display("10: Main at %0d (was %0d)", m_lba, g);
+	`CHECK(m_state == ST_PLAY && m_lba >= g - 3 && m_lba <= g + 8, "10: position after the save")
+	run(5 * TICK);
+	do_load(1);
+	$display("10: Main at %0d after the load", m_lba);
+	`CHECK(m_state == ST_PLAY && m_lba >= g - 3 && m_lba <= g + 8, "10: position after the load")
+	`CHECK(stats == 2, "10: statuses")
+
 	//------------------------------------------------------------------ 6
 	$display("--- 6: empty slot, state kept");
 	got.delete(); stats = 0;

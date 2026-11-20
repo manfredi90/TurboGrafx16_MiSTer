@@ -60,6 +60,7 @@ module ss_cd #(parameter [27:0] GAP = 28'd2147000, parameter [27:0] REFILL = 28'
 	input             comm_ev,        // command sent (pulse)
 	input             dataout_ev,     // MODE SELECT data sent (pulse)
 	input             reset_ev,       // drive reset (pulse)
+	input             msg_ev,         // any message of the core to Main (pulse)
 	output reg        block_out,      // messages of the core to Main are not sent
 	output reg        inj_req,        // send inj_data to Main instead (pulse)
 	output reg[111:0] inj_data,
@@ -442,7 +443,7 @@ end
 
 typedef enum logic [4:0] {
 	S_IDLE,
-	S_SV_ENG, S_SV_ENGWAIT, S_SV_FILE, S_SV_BK, S_SV_BKWAIT, S_SV_PAD, S_SV_FILL, S_SV_NEXT,
+	S_SV_ENG, S_SV_ENGWAIT, S_SV_STOP, S_SV_RESYNC, S_SV_FILE, S_SV_BK, S_SV_BKWAIT, S_SV_PAD, S_SV_FILL, S_SV_NEXT,
 	S_LD_HDR, S_LD_CHECK, S_LD_FREEZE, S_LD_COPY, S_LD_NEXT, S_LD_ENG, S_LD_ENGWAIT,
 	S_LD_STEP, S_LD_SETTLE,
 	S_SD_WAIT, S_FAIL, S_DONE
@@ -458,6 +459,7 @@ reg  [27:0] wait_cnt;
 reg  [27:0] since_inj;   // time since the last command to Main
 reg   [2:0] step;
 reg         load_ok;
+reg         saving;
 reg         old_ack;
 reg  [15:0] size_lo;
 
@@ -501,7 +503,9 @@ always @(posedge clk) begin
 	old_ack <= sd_ack;
 	if (~old_ack & sd_ack) {sd_rd, sd_wr} <= 0;
 
+	// Main sees a message when the toggle bit changes: two too close, and both are lost
 	if (~&since_inj) since_inj <= since_inj + 1'd1;
+	if (msg_ev) since_inj <= 0;
 	wait_cnt <= wait_cnt + 1'd1;
 
 	case (st)
@@ -529,7 +533,29 @@ always @(posedge clk) begin
 			st       <= S_SV_ENGWAIT;
 		end
 
-		S_SV_ENGWAIT: if (wait_cnt > 4 && !eng_busy) st <= S_SV_FILE;
+		S_SV_ENGWAIT: if (wait_cnt > 4 && !eng_busy) st <= S_SV_STOP;
+
+		// the copy takes seconds: the drive must not go on meanwhile (CD audio would be
+		// ahead of the game), it is stopped and then put back as after a load
+		S_SV_STOP: if (since_inj >= GAP) begin
+			saving       <= 1;
+			block_out    <= 1;
+			set_drop_all <= 1;
+			inj_data     <= {16'h00FF, 96'd0};
+			inj_req      <= 1;
+			since_inj    <= 0;
+			st           <= S_SV_FILE;
+		end
+
+		S_SV_RESYNC: begin
+			sd_act       <= 0;
+			ddr_owner    <= 0;
+			zero_fill    <= 0;
+			fifo_clr     <= 1;
+			clr_drop_all <= 1;
+			step         <= 0;
+			st           <= S_LD_STEP;
+		end
 
 		S_SV_FILE: st <= sav_lbas ? S_SV_PAD : S_SV_BK;
 
@@ -596,8 +622,8 @@ always @(posedge clk) begin
 		S_SV_NEXT: begin
 			lba_n <= lba_n + 6'd32;
 			if (lba_n + 6'd32 >= total_lbas) begin
-				info <= I_SAVED;
-				st   <= S_DONE;
+				load_ok <= 1;
+				st      <= S_SV_RESYNC;
 			end
 			else st <= S_SV_FILL;
 		end
@@ -637,7 +663,7 @@ always @(posedge clk) begin
 		end
 
 		// stop the drive and everything it still sends
-		S_LD_FREEZE: if (paused) begin
+		S_LD_FREEZE: if (paused && since_inj >= GAP) begin
 			block_out    <= 1;
 			set_drop_all <= 1;
 			inj_data     <= {16'h00FF, 96'd0};
@@ -774,7 +800,7 @@ always @(posedge clk) begin
 
 		// the sector being read must be in the FIFO again before the core runs
 		S_LD_SETTLE: if (refill_done || !refill_arm && !refill_pkt || wait_cnt >= REFILL) begin
-			info <= load_ok ? I_LOADED : I_FAILED;
+			info <= !load_ok ? I_FAILED : saving ? I_SAVED : I_LOADED;
 			st   <= S_DONE;
 		end
 
@@ -786,8 +812,9 @@ always @(posedge clk) begin
 		end
 
 		S_FAIL: begin
-			info <= I_FAILED;
-			st   <= S_DONE;
+			info    <= I_FAILED;
+			load_ok <= 0;
+			st      <= saving ? S_SV_RESYNC : S_DONE;
 		end
 
 		S_DONE: begin
@@ -797,6 +824,7 @@ always @(posedge clk) begin
 			sd_act    <= 0;
 			ddr_owner <= 0;
 			zero_fill <= 0;
+			saving    <= 0;
 			st        <= S_IDLE;
 		end
 
@@ -804,8 +832,9 @@ always @(posedge clk) begin
 	endcase
 
 	if (reset) begin
-		st    <= S_IDLE;
-		hold  <= 0;
+		st     <= S_IDLE;
+		hold   <= 0;
+		saving <= 0;
 		sd_rd <= 0;
 		sd_wr <= 0;
 	end

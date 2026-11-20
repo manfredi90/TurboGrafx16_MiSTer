@@ -63,6 +63,8 @@ reg         bus_wren = 0, bus_rst = 0;
 wire [63:0] bus_dout;
 reg  [95:0] comm = 0;
 reg         comm_ev = 0, dataout_ev = 0, reset_ev = 0;
+reg         code2_ev = 0;
+wire        msg_ev = comm_ev | reset_ev | code2_ev;
 wire        block_out, inj_req;
 wire[111:0] inj_data;
 reg         stat_ev = 0;
@@ -114,7 +116,7 @@ ss_cd #(.GAP(GAP), .REFILL(REFILL)) dut
 	.eng_save(eng_save), .eng_load(eng_load), .eng_busy(eng_busy), .eng_load_done(eng_load_done), .eng_restore(eng_restore),
 	.hold(hold), .paused(paused), .core_run(core_run), .fifo_clr(fifo_clr),
 	.bus_din(bus_din), .bus_adr(bus_adr), .bus_wren(bus_wren), .bus_rst(bus_rst), .bus_dout(bus_dout),
-	.comm(comm), .comm_ev(comm_ev), .dataout_ev(dataout_ev), .reset_ev(reset_ev), .block_out(block_out), .inj_req(inj_req), .inj_data(inj_data),
+	.comm(comm), .comm_ev(comm_ev), .dataout_ev(dataout_ev), .reset_ev(reset_ev), .msg_ev(msg_ev), .block_out(block_out), .inj_req(inj_req), .inj_data(inj_data),
 	.stat_ev(stat_ev), .stat_in(stat_in), .dout_ev(dout_ev), .stat_get(stat_get), .stat_out(stat_out), .dout_req(dout_req),
 	.pkt_hdr(pkt_hdr), .pkt_ch(pkt_ch), .pkt_len(pkt_len), .byte_wr(byte_wr), .byte_idx(byte_idx), .byte_val(byte_val), .drop(drop), .scsi_rd(scsi_rd), .scsi_reset(scsi_reset),
 	.ddr_owner(ddr_owner), .ddr_adr(ddr_adr), .ddr_din(ddr_din), .ddr_rnw(ddr_rnw), .ddr_req(ddr_req), .ddr_done(ddr_done), .ddr_dout(ddr_dout),
@@ -239,6 +241,7 @@ bit           in_data = 0;
 int           rd_div = 0;
 int           rd_rate = 6;
 bit           core_cmd_waiting = 0;
+bit           core_pulse = 0;
 
 typedef struct { int got_n; int stats; bit in_data; } core_state_t;
 
@@ -247,6 +250,7 @@ reg [111:0] msgq[$];
 bit         msginj[$];   // the message comes from ss_cd
 always @(posedge clk) begin
 	scsi_rd <= 0;
+	code2_ev <= 0;
 	if (byte_wr && pkt_ch == 1 && !drop) fifo.push_back(byte_val);
 	if (fifo_clr || scsi_reset) fifo.delete();
 	if (stat_get) stats++;
@@ -262,7 +266,7 @@ always @(posedge clk) begin
 			else if (in_data) begin
 				// CD_DATA_END
 				in_data = 0;
-				if (!block_out) begin msgq.push_back({16'h0002, 96'd0}); msginj.push_back(0); end
+				if (!block_out) begin msgq.push_back({16'h0002, 96'd0}); msginj.push_back(0); code2_ev <= 1; end
 			end
 		end
 	end
@@ -724,6 +728,9 @@ initial begin
 	$display("9: sub %0d", dut.sub_lba);
 	g = dut.sub_lba;
 	do_save(0);
+	// the drive was stopped for the copy, and goes on from where it was
+	$display("9: after the save Main at %0d, loop start %0d", m_lba, m_start);
+	`CHECK(m_state == ST_PLAY && m_start == 5 && m_lba >= g && m_lba <= g + 8, "9: position after the save")
 	run(10 * TICK);
 	inj_cmds.delete();
 	do_load(0);

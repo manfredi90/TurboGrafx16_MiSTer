@@ -454,7 +454,7 @@ always @(posedge clk_sys) begin
 end
 
 reg         cd_dat_req;
-reg         cd_comm_ev, cd_dataout_ev, cd_reset_ev;
+reg         cd_comm_ev, cd_dataout_ev, cd_reset_ev, cd_msg_ev;
 always @(posedge clk_sys) begin
 	reg cd_out112_last = 1;
 	reg cd_comm_send_old = 0, cd_dataout_send_old = 0, cd_dat_req_old = 0, cd_reset_req_old = 0;
@@ -464,6 +464,7 @@ always @(posedge clk_sys) begin
 	cd_comm_ev <= 0;
 	cd_dataout_ev <= 0;
 	cd_reset_ev <= 0;
+	cd_msg_ev <= 0;
 	if (reset || cart_download) begin
 		cd_region <= 0;
 	end
@@ -493,21 +494,25 @@ always @(posedge clk_sys) begin
 			cd_in[111:96] <= {status[1],15'd0};
 			cd_in[112] <= ~cd_in[112];
 			cd_comm_ev <= 1;
+			cd_msg_ev <= 1;
 		end
 		else if (cd_dataout_send && !cd_dataout_send_old) begin
 			cd_in[79:0] <= cd_dataout;
 			cd_in[111:96] <= 16'h0001;
 			cd_in[112] <= ~cd_in[112];
 			cd_dataout_ev <= 1;
+			cd_msg_ev <= 1;
 		end
 		else if (cd_dat_req && !cd_dat_req_old) begin
 			cd_in[111:96] <= 16'h0002;
 			cd_in[112] <= ~cd_in[112];
+			cd_msg_ev <= 1;
 		end
 		else if (cd_reset_req && !cd_reset_req_old) begin
 			cd_in[111:96] <= 16'h00FF;
 			cd_in[112] <= ~cd_in[112];
 			cd_reset_ev <= 1;
+			cd_msg_ev <= 1;
 		end
 	end
 end
@@ -1556,6 +1561,7 @@ ss_cd ss_cd
 	.comm_ev      (cd_comm_ev),
 	.dataout_ev   (cd_dataout_ev),
 	.reset_ev     (cd_reset_ev),
+	.msg_ev       (cd_msg_ev),
 	.block_out    (cd_block),
 	.inj_req      (cd_inj_req),
 	.inj_data     (cd_inj_data),

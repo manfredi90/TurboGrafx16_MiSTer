@@ -1526,7 +1526,7 @@ wire  [5:0] hps_sd_blk = cd_sd_act ? cd_sd_blk : 6'd0;
 wire        hps_sd_rd  = cd_sd_act ? cd_sd_rd  : sd_rd;
 wire        hps_sd_wr  = cd_sd_act ? cd_sd_wr  : sd_wr;
 
-ss_cd ss_cd
+ss_cd #(.VERIFY(1)) ss_cd
 (
 	.clk          (clk_sys),
 	.reset        (reset | cart_download),

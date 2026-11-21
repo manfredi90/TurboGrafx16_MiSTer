@@ -7,7 +7,8 @@ use work.pBus_savestates.all;
 
 entity tb is
 	generic (
-		MODE      : integer := 0;        -- 0: plain run, 1: save at F_EVENT, 2: load at F_EVENT
+		MODE      : integer := 0;        -- 0: plain run, 1: save at F_EVENT, 2: load at F_EVENT,
+		                                 -- 3: load at F_EVENT and save again at once (STATEFILE.re)
 		ROMFILE   : string  := "rom/sstest.pce";
 		SGXMODE   : integer := 0;
 		CDMODE    : integer := 0;        -- CD unit on; the testbench gives data and a status at T_DATA and T_STAT
@@ -15,6 +16,7 @@ entity tb is
 		T_STAT    : integer := 0;
 		F_EVENT   : integer := 6;
 		F_RUN     : integer := 6;        -- frames after the event
+		E_DELAY   : integer := 0;        -- save this many clocks after the start of frame F_EVENT
 		LOGFILE   : string  := "a.log";
 		STATEFILE : string  := "state.txt"
 	);
@@ -60,6 +62,8 @@ architecture sim of tb is
 	signal coretime   : integer := 0;
 	signal logging    : boolean := (MODE /= 2);
 	signal event_done : boolean := false;
+	signal e_cnt      : integer := -1;
+	signal resave     : boolean := false;
 	signal t_event    : integer := 0;
 	signal stop_frame : integer := 1000000;
 	signal freeze, cpu_ce, cpu_wr_n, cpu_rd_n : std_logic;
@@ -220,11 +224,17 @@ begin
 			if freeze = '0' then
 				coretime <= coretime + 1;
 			end if;
+			if e_cnt > 0 then e_cnt <= e_cnt - 1; end if;
+			if e_cnt = 1 then req_save <= '1'; end if;
 			if VIDEO_VS = '1' and vs_old = '0' then
 				frame <= frame + 1;
 				if frame + 1 = F_EVENT and not event_done and MODE /= 0 then
-					if MODE = 1 then req_save <= '1'; else req_load <= '1'; end if;
-					if MODE = 2 then
+					if MODE = 1 then
+						if E_DELAY = 0 then req_save <= '1'; else e_cnt <= E_DELAY; end if;
+					else
+						req_load <= '1';
+					end if;
+					if MODE >= 2 then
 						file_open(sf, STATEFILE, read_mode);
 						readline(sf, l);
 						read(l, t);
@@ -273,7 +283,21 @@ begin
 			if MODE = 2 and sleep = '0' and sleep_old = '1' and load_done = '0' and hold = 0 then
 				report "load rejected" severity failure;
 			end if;
-			if MODE = 2 and ss_restore = '1' then
+			if MODE = 3 and load_done = '1' then
+				e_cnt  <= 3;
+				resave <= true;
+			end if;
+			if MODE = 3 and resave and e_cnt = 0 and sleep = '0' and sleep_old = '1' then
+				file_open(sf, STATEFILE & ".re", write_mode);
+				for i in 0 to SLOTSIZE loop
+					hwrite(l, ddr(i));
+					writeline(sf, l);
+				end loop;
+				file_close(sf);
+				report "saved again" severity note;
+				std.env.finish;
+			end if;
+			if MODE >= 2 and ss_restore = '1' then
 				coretime <= t_event;
 			end if;
 			sleep_old := sleep;

@@ -21,7 +21,9 @@
 //  is larger with the Arcade Card, whose 2 MB of RAM go in the state too.
 //============================================================================
 
-module ss_cd #(parameter [27:0] GAP = 28'd2147000, parameter [27:0] REFILL = 28'd85900000)
+module ss_cd #(parameter [27:0] GAP = 28'd2147000, parameter [27:0] REFILL = 28'd85900000,
+               // test: after a load the state is saved again at once, in slot 4
+               parameter VERIFY = 0)
 (
 	input             clk,
 	input             reset,
@@ -327,10 +329,11 @@ always @(posedge clk) begin
 		if (byte_idx == 97) q_done <= 1;
 	end
 	// the position of the head while it plays, or where a PAUSE stopped it; not while the
-	// drive is put back: it goes through other positions
+	// core is held (the state already has the position, the drive is put back there) and
+	// not while the drive is put back: it goes through other positions
 	if (q_done) begin
 		audio_seen <= 0;
-		if (q[91:88] == 4'd1 && (audio_seen || (drv == DRV_PAUSE && paused_da)) && !block_out) begin
+		if (q[91:88] == 4'd1 && (audio_seen || (drv == DRV_PAUSE && paused_da)) && !block_out && !hold) begin
 			sub_lba   <= (q_lba < 150) ? 19'd0 : q_lba[18:0] - 19'd150;
 			sub_valid <= 1;
 		end
@@ -458,7 +461,7 @@ typedef enum logic [4:0] {
 	S_IDLE,
 	S_SV_ENG, S_SV_ENGWAIT, S_SV_STOP, S_SV_RESYNC, S_SV_FILE, S_SV_BK, S_SV_BKWAIT, S_SV_PAD, S_SV_FILL, S_SV_NEXT,
 	S_LD_HDR, S_LD_CHECK, S_LD_FREEZE, S_LD_COPY, S_LD_NEXT, S_LD_ENG, S_LD_ENGWAIT,
-	S_LD_STEP, S_LD_SETTLE,
+	S_LD_STEP, S_LD_SETTLE, S_VF_ENG, S_VF_ENGWAIT,
 	S_SD_WAIT, S_FAIL, S_DONE
 } state_t;
 
@@ -473,6 +476,7 @@ reg  [27:0] since_inj;   // time since the last command to Main
 reg   [2:0] step;
 reg         load_ok;
 reg         saving;
+reg         verifying;
 reg         old_ack;
 reg  [15:0] size_lo;
 
@@ -738,10 +742,13 @@ always @(posedge clk) begin
 		S_LD_ENGWAIT: begin
 			if (eng_load_done || (wait_cnt > 4 && !eng_busy)) begin
 				load_ok      <= eng_load_done;
-				fifo_clr     <= 1;
-				clr_drop_all <= 1;
-				step         <= 0;
-				st           <= S_LD_STEP;
+				if (VERIFY && eng_load_done) st <= S_VF_ENG;
+				else begin
+					fifo_clr     <= 1;
+					clr_drop_all <= 1;
+					step         <= 0;
+					st           <= S_LD_STEP;
+				end
 			end
 		end
 
@@ -814,9 +821,21 @@ always @(posedge clk) begin
 
 		// the sector being read must be in the FIFO again before the core runs
 		S_LD_SETTLE: if (refill_done || !refill_arm && !refill_pkt || wait_cnt >= REFILL) begin
-			info <= !load_ok ? I_FAILED : saving ? I_SAVED : I_LOADED;
+			info <= !load_ok ? I_FAILED : (saving && !verifying) ? I_SAVED : I_LOADED;
 			st   <= S_DONE;
 		end
+
+		//------------------------------------------------------------------ verify
+		// the core is still as the state left it: the same state must come out
+		S_VF_ENG: begin
+			verifying <= 1;
+			eng_save  <= 1;
+			wait_cnt  <= 0;
+			slot_lba  <= SLOT_LBA0 + 2'd3 * stride;
+			st        <= S_VF_ENGWAIT;
+		end
+
+		S_VF_ENGWAIT: if (wait_cnt > 4 && !eng_busy) st <= S_SV_FILE;
 
 		//------------------------------------------------------------------ common
 		S_SD_WAIT: if (old_ack & ~sd_ack) begin
@@ -828,7 +847,7 @@ always @(posedge clk) begin
 		S_FAIL: begin
 			info    <= I_FAILED;
 			load_ok <= 0;
-			st      <= saving ? S_SV_RESYNC : S_DONE;
+			st      <= (saving || verifying) ? S_SV_RESYNC : S_DONE;
 		end
 
 		S_DONE: begin
@@ -839,6 +858,7 @@ always @(posedge clk) begin
 			ddr_owner <= 0;
 			zero_fill <= 0;
 			saving    <= 0;
+			verifying <= 0;
 			st        <= S_IDLE;
 		end
 
@@ -849,6 +869,7 @@ always @(posedge clk) begin
 		st     <= S_IDLE;
 		hold   <= 0;
 		saving <= 0;
+		verifying <= 0;
 		sd_rd <= 0;
 		sd_wr <= 0;
 	end

@@ -761,6 +761,27 @@ initial begin
 	`CHECK(m_state == ST_PLAY && m_lba >= g - 3 && m_lba <= g + 8, "10: position after the load")
 	`CHECK(stats == 2, "10: statuses")
 
+	//------------------------------------------------------------------ 11
+	$display("--- 11: CD audio with interrupt, then READ SUBQ: no status at the end");
+	got.delete(); stats = 0;
+	core_cmd({48'd0, 8'd10, 8'd0, 8'd0, 8'd0, 8'h00, 8'hD8});          // SAPSP lba 10, silent
+	wait (stats == 1);
+	core_cmd({48'd0, 8'd50, 8'd0, 8'd0, 8'd0, 8'h02, 8'hD9});          // SAPEP lba 50, interrupt
+	run(5 * TICK);
+	core_cmd({88'd0, 8'hDD});                                          // the game polls the position
+	wait (stats == 2);
+	run(3 * TICK);
+	`CHECK(dut.drv == 2, "11: still playing after the status of READ SUBQ")
+	g = m_lba;
+	do_save(2);
+	`CHECK(m_state == ST_PLAY && m_lba >= g - 3 && m_lba <= g + 8, "11: position after the save")
+	do_load(2);
+	`CHECK(m_state == ST_PLAY && m_lba >= g - 3 && m_lba <= g + 8, "11: position after the load")
+	`CHECK(!m_int, "11: no interrupt pending in Main")
+	wait (m_state == ST_IDLE);
+	run(3 * TICK);
+	`CHECK(stats == 2, "11: no status at the end")
+
 	//------------------------------------------------------------------ 6
 	$display("--- 6: empty slot, state kept");
 	got.delete(); stats = 0;

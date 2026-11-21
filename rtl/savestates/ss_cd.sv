@@ -150,6 +150,11 @@ reg  [11:0] fifo_cnt;     // bytes in the SCSI FIFO
 reg  [11:0] pkt_pos;      // bytes of the last data packet that came
 reg  [11:0] pkt_size;
 reg         pkt_rd;       // it was a sector of READ
+reg         audio_seen;   // a sector of CD audio came before this subcode
+
+// Main gives the status at the end of CD audio played with interrupt only if no command
+// came after SAPEP; else the audio goes on to its end without status
+wire        int_live = drv == DRV_PLAY && sapep_valid && sapep[15:8] == MODE_INT && awaiting && last_cmd[7:0] == 8'hD9;
 
 // copy of the state, kept while the engine reads it
 reg  [63:0] s80, s81, s82, s83, s84, s85;
@@ -259,7 +264,8 @@ always @(posedge clk) begin
 			stat_pend <= 1;
 			stat_out  <= stat_in;
 		end
-		if (drv == DRV_PLAY && sapep_valid && sapep[15:8] == MODE_INT) drv <= DRV_IDLE;
+		// the end of CD audio played with interrupt, not the status of another command
+		if (int_live) drv <= DRV_IDLE;
 	end
 	if (dout_ev && !drop_all) dout_pend <= 1;
 
@@ -313,14 +319,20 @@ always @(posedge clk) begin
 
 	// subcode
 	if (pkt_hdr && pkt_ch == 2'd3) q <= 0;
+	// Main sends a sector of CD audio before its subcode only while it plays
+	if (pkt_hdr && pkt_ch == 2'd2) audio_seen <= 1;
 	if (byte_wr && pkt_ch == 2'd3 && byte_idx >= 2 && byte_idx < 98) begin
 		q <= {q[94:0], byte_val[6]};
 		if (byte_idx == 97) q_done <= 1;
 	end
-	// not while the drive is put back: it goes through other positions
-	if (q_done && q[91:88] == 4'd1 && (drv == DRV_PLAY || (drv == DRV_PAUSE && paused_da)) && !block_out) begin
-		sub_lba   <= (q_lba < 150) ? 19'd0 : q_lba[18:0] - 19'd150;
-		sub_valid <= 1;
+	// the position of the head while it plays, or where a PAUSE stopped it; not while the
+	// drive is put back: it goes through other positions
+	if (q_done) begin
+		audio_seen <= 0;
+		if (q[91:88] == 4'd1 && (audio_seen || (drv == DRV_PAUSE && paused_da)) && !block_out) begin
+			sub_lba   <= (q_lba < 150) ? 19'd0 : q_lba[18:0] - 19'd150;
+			sub_valid <= 1;
+		end
 	end
 
 	if (eng_restore) begin
@@ -470,6 +482,7 @@ wire [31:0] size_rd = {buf_q, size_lo};
 
 // commands for the drive after a load
 wire  [7:0] play_mode = sapep_valid ? sapep[15:8] : sapsp[15:8];
+wire [95:0] sapep_use = (sapep[15:8] == MODE_INT && !int_live) ? {sapep[95:16], 8'h03, 8'hD9} : sapep;
 wire  [7:0] sp_mode   = (drv == DRV_PAUSE) ? 8'h00 : sapsp[15:8];
 wire [95:0] sapsp_pos = {48'd0, sub_lba[7:0], sub_lba[15:8], 5'd0, sub_lba[18:16], 8'h00, sp_mode, 8'hD8};
 wire [95:0] sapsp_org = {sapsp[95:16], sp_mode, 8'hD8};
@@ -749,10 +762,10 @@ always @(posedge clk) begin
 					end
 				// end of CD audio
 				2: if ((drv == DRV_PLAY && sapep_valid) || (awaiting && last_cmd[7:0] == 8'hD9) || loop_pos) begin
-						inj_data  <= {fast, 15'd0, sapep_valid ? sapep : sapep_end};
+						inj_data  <= {fast, 15'd0, sapep_valid ? sapep_use : sapep_end};
 						inj_req   <= 1;
 						since_inj <= 0;
-						if (play_mode != MODE_INT && !(awaiting && last_cmd[7:0] == 8'hD9)) set_swallow <= 1;
+						if (!(awaiting && last_cmd[7:0] == 8'hD9)) set_swallow <= 1;
 					end
 				// sectors
 				3: if (last_cmd[7:0] == 8'h08 && (drv == DRV_READ || res_partial || awaiting)) begin

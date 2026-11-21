@@ -263,9 +263,10 @@ always @(posedge clk) begin
 		else begin
 			stat_pend <= 1;
 			stat_out  <= stat_in;
+			// the end of CD audio played with interrupt; not a status of the commands
+			// that put the drive back, which are dropped
+			if (int_live) drv <= DRV_IDLE;
 		end
-		// the end of CD audio played with interrupt, not the status of another command
-		if (int_live) drv <= DRV_IDLE;
 	end
 	if (dout_ev && !drop_all) dout_pend <= 1;
 

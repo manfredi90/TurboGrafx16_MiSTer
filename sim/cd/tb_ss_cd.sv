@@ -782,6 +782,28 @@ initial begin
 	run(3 * TICK);
 	`CHECK(stats == 2, "11: no status at the end")
 
+	//------------------------------------------------------------------ 12
+	$display("--- 12: CD audio with interrupt, save while it plays");
+	got.delete(); stats = 0;
+	core_cmd({48'd0, 8'd10, 8'd0, 8'd0, 8'd0, 8'h00, 8'hD8});          // SAPSP lba 10, silent
+	wait (stats == 1);
+	core_cmd({48'd0, 8'd50, 8'd0, 8'd0, 8'd0, 8'h02, 8'hD9});          // SAPEP lba 50, interrupt
+	run(8 * TICK);
+	$display("12: drv %0d awaiting %0d last %h int_live %0d", dut.drv, dut.awaiting, dut.last_cmd[7:0], dut.int_live);
+	inj_cmds.delete();
+	do_save(3);
+	foreach (inj_cmds[i]) $display("12: command %h", inj_cmds[i]);
+	`CHECK(m_int, "12: interrupt pending in Main after the save")
+	run(3 * TICK);
+	do_save(3);
+	`CHECK(m_int && m_state == ST_PLAY, "12: playing with interrupt after a second save")
+	run(3 * TICK);
+	do_load(3);
+	`CHECK(m_int && m_state == ST_PLAY, "12: playing with interrupt after the load")
+	wait (m_state == ST_IDLE);
+	run(3 * TICK);
+	`CHECK(stats == 2, "12: status at the end")
+
 	//------------------------------------------------------------------ 6
 	$display("--- 6: empty slot, state kept");
 	got.delete(); stats = 0;

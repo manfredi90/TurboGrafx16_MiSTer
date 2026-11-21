@@ -819,8 +819,10 @@ always @(posedge clk) begin
 			endcase
 		end
 
-		// the sector being read must be in the FIFO again before the core runs
-		S_LD_SETTLE: if (refill_done || !refill_arm && !refill_pkt || wait_cnt >= REFILL) begin
+		// the sector being read must be in the FIFO again before the core runs; and the
+		// core must not send a command right after the last one put back: Main would see
+		// only one toggle of the two and lose both
+		S_LD_SETTLE: if ((refill_done || !refill_arm && !refill_pkt || wait_cnt >= REFILL) && since_inj >= GAP) begin
 			info <= !load_ok ? I_FAILED : (saving && !verifying) ? I_SAVED : I_LOADED;
 			st   <= S_DONE;
 		end
